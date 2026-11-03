@@ -30,6 +30,9 @@ esp_err_t web_send_setup_page(httpd_req_t *req);
 
 esp_err_t api_register(httpd_handle_t srv);
 
+/* État instantané (mesures, flux, appareils), partagé par /api/state et /ws. */
+cJSON *state_to_json(void);
+
 /* Conversion de la config ; les secrets sont renvoyés "***" s'ils sont définis. */
 cJSON *cfg_to_json(const cfg_t *c);
 

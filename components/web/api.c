@@ -11,6 +11,7 @@
 #include "config.h"
 #include "net.h"
 #include "sysmon.h"
+#include "jwt_exp.h"
 #include "web_priv.h"
 
 static const char *TAG = "web";
@@ -84,7 +85,16 @@ static esp_err_t system_get(httpd_req_t *req)
     cJSON_AddBoolToObject(r, "tariff_configured", s_cfg.tariff.configured);
     cJSON_AddBoolToObject(r, "observer", s_cfg.sys.observer);
     cJSON_AddStringToObject(r, "hostname", s_cfg.sys.hostname);
+    cJSON_AddNumberToObject(r, "envoy_token_exp", (double)jwt_exp(s_cfg.dev.envoy_token));
+    cJSON_AddBoolToObject(r, "envoy_skip_cert", s_cfg.dev.envoy_fw7 && s_cfg.dev.envoy_skip_cert);
     return web_send_json(req, r);
+}
+
+/* ---------- GET /api/state ---------- */
+
+static esp_err_t state_get(httpd_req_t *req)
+{
+    return web_send_json(req, state_to_json());
 }
 
 /* ---------- GET / POST /api/config ---------- */
@@ -164,14 +174,21 @@ static esp_err_t config_post_handler(httpd_req_t *req)
                   strcmp(old_sys.hostname, s_cfg.sys.hostname) != 0;
     memset(&old_sys, 0, sizeof(old_sys));
     bool saved;
-    return save_and_reply(req, reboot, &saved);
+    err = save_and_reply(req, reboot, &saved);
+    if (saved && reboot) {
+        ESP_LOGI(TAG, "WiFi ou nom réseau modifié : redémarrage");
+        if (esp_timer_start_once(s_reboot_timer, SETUP_REBOOT_DELAY_US) != ESP_OK) {
+            ESP_LOGE(TAG, "minuterie de redémarrage indisponible");
+        }
+    }
+    return err;
 }
 
 /* ---------- POST /api/setup (portail) ---------- */
 
 static void on_reboot_timer(void *arg)
 {
-    sysmon_restart("nouvelle configuration WiFi");
+    sysmon_restart("nouvelle configuration réseau");
 }
 
 /* Corps : {"wifi_ssid","wifi_pass","admin_pass","hostname"}. Sans mot de passe au premier
@@ -227,6 +244,7 @@ esp_err_t api_register(httpd_handle_t srv)
 
     const httpd_uri_t routes[] = {
         { .uri = "/api/system", .method = HTTP_GET,  .handler = system_get },
+        { .uri = "/api/state",  .method = HTTP_GET,  .handler = state_get },
         { .uri = "/api/config", .method = HTTP_GET,  .handler = config_get_handler },
         { .uri = "/api/config", .method = HTTP_POST, .handler = config_post_handler },
         { .uri = "/api/setup",  .method = HTTP_POST, .handler = setup_post_handler },

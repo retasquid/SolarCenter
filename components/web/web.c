@@ -2,6 +2,7 @@
 #include <string.h>
 #include "esp_log.h"
 #include "esp_check.h"
+#include "esp_timer.h"
 #include "config.h"
 #include "net.h"
 #include "web.h"
@@ -179,6 +180,82 @@ static esp_err_t static_get_handler(httpd_req_t *req)
     return err;
 }
 
+/* ---------- WebSocket /ws : état poussé toutes les 2 s ---------- */
+
+#define WS_PERIOD_US    (2000 * 1000)
+#define WS_MAX_CLIENTS  8
+#define WS_RX_MAX       128
+
+static httpd_handle_t s_srv;
+static esp_timer_handle_t s_ws_timer;
+static volatile bool s_ws_pending;
+
+static esp_err_t ws_handler(httpd_req_t *req)
+{
+    if (req->method == HTTP_GET) {
+        ESP_LOGI(TAG, "client WebSocket connecté (fd %d)", httpd_req_to_sockfd(req));
+        return ESP_OK;
+    }
+    /* Le client n'envoie rien d'utile : les trames sont lues puis ignorées. */
+    httpd_ws_frame_t pkt = { 0 };
+    esp_err_t err = httpd_ws_recv_frame(req, &pkt, 0);
+    if (err != ESP_OK) {
+        return err;
+    }
+    if (pkt.len > 0 && pkt.len <= WS_RX_MAX) {
+        uint8_t rx[WS_RX_MAX];
+        pkt.payload = rx;
+        err = httpd_ws_recv_frame(req, &pkt, sizeof(rx));
+    }
+    return err;
+}
+
+/* Exécuté dans la tâche httpd (httpd_queue_work). */
+static void ws_broadcast(void *arg)
+{
+    size_t n = WS_MAX_CLIENTS;
+    int fds[WS_MAX_CLIENTS];
+    char *txt = NULL;
+    if (httpd_get_client_list(s_srv, &n, fds) == ESP_OK) {
+        for (size_t i = 0; i < n; i++) {
+            if (httpd_ws_get_fd_info(s_srv, fds[i]) != HTTPD_WS_CLIENT_WEBSOCKET) {
+                continue;
+            }
+            if (txt == NULL) {
+                cJSON *st = state_to_json();
+                txt = st != NULL ? cJSON_PrintUnformatted(st) : NULL;
+                cJSON_Delete(st);
+                if (txt == NULL) {
+                    break;
+                }
+            }
+            httpd_ws_frame_t f = {
+                .type = HTTPD_WS_TYPE_TEXT,
+                .payload = (uint8_t *)txt,
+                .len = strlen(txt),
+                .final = true,
+            };
+            esp_err_t err = httpd_ws_send_frame_async(s_srv, fds[i], &f);
+            if (err != ESP_OK) {
+                ESP_LOGD(TAG, "envoi WS fd %d : %s", fds[i], esp_err_to_name(err));
+            }
+        }
+    }
+    cJSON_free(txt);
+    s_ws_pending = false;
+}
+
+static void on_ws_timer(void *arg)
+{
+    if (s_ws_pending) {
+        return;
+    }
+    s_ws_pending = true;
+    if (httpd_queue_work(s_srv, ws_broadcast, NULL) != ESP_OK) {
+        s_ws_pending = false;
+    }
+}
+
 esp_err_t web_start(void)
 {
     httpd_config_t c = HTTPD_DEFAULT_CONFIG();
@@ -191,7 +268,16 @@ esp_err_t web_start(void)
 
     httpd_handle_t srv = NULL;
     ESP_RETURN_ON_ERROR(httpd_start(&srv, &c), TAG, "httpd_start");
+    s_srv = srv;
     ESP_RETURN_ON_ERROR(api_register(srv), TAG, "API");
+
+    const httpd_uri_t ws = {
+        .uri = "/ws", .method = HTTP_GET, .handler = ws_handler, .is_websocket = true,
+    };
+    ESP_RETURN_ON_ERROR(httpd_register_uri_handler(srv, &ws), TAG, "WebSocket");
+    const esp_timer_create_args_t targs = { .callback = on_ws_timer, .name = "ws_push" };
+    ESP_RETURN_ON_ERROR(esp_timer_create(&targs, &s_ws_timer), TAG, "timer WS");
+    ESP_RETURN_ON_ERROR(esp_timer_start_periodic(s_ws_timer, WS_PERIOD_US), TAG, "timer WS");
 
     /* Enregistré en dernier : le joker ne doit pas masquer /api/. */
     const httpd_uri_t st = { .uri = "/*", .method = HTTP_GET, .handler = static_get_handler };

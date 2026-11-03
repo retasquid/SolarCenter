@@ -12,6 +12,11 @@ CONFIG_MBEDTLS_ASYMMETRIC_CONTENT_LEN=y
 CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=16384
 CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
 
+# Envoy : certificat auto-signé (§8.2). Ne s'applique qu'aux connexions sans option de
+# vérification ; Open-Meteo utilise le bundle de certificats et reste vérifié.
+CONFIG_ESP_TLS_INSECURE=y
+CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y
+
 # Sécurités (§10)
 CONFIG_ESP_BROWNOUT_DET=y
 CONFIG_ESP_TASK_WDT_EN=y

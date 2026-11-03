@@ -61,7 +61,7 @@ main { padding: 16px; max-width: 1100px; margin: 0 auto; }
 .page { display: none; }
 .page.active { display: block; }
 
-.grid { display: grid; gap: 12px; grid-template-columns: 1fr; }
+.grid { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
 @media (min-width: 720px) { .grid { grid-template-columns: repeat(2, 1fr); } }
 @media (min-width: 1040px) { .grid { grid-template-columns: repeat(3, 1fr); } }
 
@@ -88,6 +88,7 @@ dd.warn { color: var(--red-soft); }
 dd.dim { color: var(--text-3); }
 
 .alerts { display: grid; gap: 8px; margin-bottom: 12px; }
+.alerts:empty { display: none; }
 .alert {
   background: var(--red-dim);
   border-left: 3px solid var(--red);
@@ -95,3 +96,104 @@ dd.dim { color: var(--text-3); }
   padding: 10px 12px;
 }
 .alert.info { background: var(--surface-2); border-left-color: var(--text-3); color: var(--text-2); }
+
+.hint { color: var(--text-3); font-size: 13px; margin: 8px 0 0; }
+.empty { color: var(--text-3); margin: 0; }
+
+/* ---------- Accueil : diagramme des flux ---------- */
+
+.home-grid { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
+.side { display: grid; gap: 12px; align-content: start; }
+@media (min-width: 860px) { .home-grid { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); } }
+
+.flow-card { padding: 8px 8px 12px; }
+#flow { display: block; width: 100%; max-width: 520px; margin: 0 auto; height: auto; }
+
+.flow-base { fill: none; stroke: var(--line); stroke-width: 2; }
+.flow-line { fill: none; stroke-linecap: round; }
+
+.node { cursor: pointer; outline: none; }
+.node:focus-visible .node-bg { stroke-width: 3; }
+.node-bg { fill: var(--surface-2); stroke-width: 2; }
+.icon { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.node.off .node-bg, .node.off .icon { stroke: var(--line); }
+.node.off .val { fill: var(--text-3); }
+
+.ring, .ring-bg { fill: none; stroke-width: 4; }
+.ring-bg { stroke: var(--line); }
+.ring { stroke-linecap: butt; }
+
+.val { fill: var(--white); font-size: 18px; font-weight: 600; text-anchor: middle; font-variant-numeric: tabular-nums; }
+.sub { fill: var(--text-2); font-size: 13px; text-anchor: middle; }
+
+.spark { margin: 8px 8px 0; padding: 10px 12px; background: var(--surface-2); border-radius: 8px; }
+.spark-head, .spark-foot { display: flex; justify-content: space-between; font-size: 13px; color: var(--text-2); }
+.spark-foot { color: var(--text-3); font-size: 12px; }
+#spark-svg { display: block; width: 100%; height: 80px; margin: 6px 0; }
+.spark-line { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.spark-zero { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.link { background: none; border: 0; color: var(--text-2); font: inherit; cursor: pointer; padding: 0 4px; }
+
+/* ---------- Paramètres ---------- */
+
+fieldset.card { margin: 0; min-width: 0; }
+legend {
+  padding: 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+}
+.auth { margin-bottom: 12px; max-width: 420px; }
+.field { margin-top: 12px; }
+.field:first-of-type { margin-top: 4px; }
+.field > label { display: block; color: var(--text-2); font-size: 14px; margin-bottom: 5px; }
+.field small { display: block; color: var(--text-3); font-size: 12px; margin-top: 4px; }
+.field.check { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.field.check > label { margin: 0; color: var(--white); }
+.field.check small { flex-basis: 100%; }
+.field.bad input, .field.bad select, .field.bad textarea { border-color: var(--red); }
+.field.bad > label { color: var(--red-soft); }
+
+input, select, textarea {
+  width: 100%;
+  padding: 9px 10px;
+  background: var(--surface-2);
+  color: var(--white);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font: inherit;
+}
+textarea { resize: vertical; font-family: ui-monospace, monospace; font-size: 12px; word-break: break-all; }
+input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--red); margin: 0; }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--red); outline-offset: 1px; border-color: transparent; }
+
+.multi { display: grid; gap: 6px; grid-template-columns: repeat(2, 1fr); }
+.multi.months { grid-template-columns: repeat(4, 1fr); }
+.multi.months input { padding: 8px 6px; }
+
+.actions {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding: 12px 0;
+  background: var(--bg);
+}
+.btn {
+  padding: 11px 22px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--red);
+  color: var(--white);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn:disabled { opacity: .5; cursor: default; }
+#cfg-msg.bad { color: var(--red-soft); }
+#cfg-msg.good { color: var(--text-2); }

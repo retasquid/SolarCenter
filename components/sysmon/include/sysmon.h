@@ -1,0 +1,17 @@
+#pragma once
+
+#include "esp_err.h"
+
+/* Mise des appareils dans leur état de repli (fourni à partir du M4). */
+typedef void (*sysmon_safe_hook_t)(void);
+
+/* Version, révision de puce, taille de flash, cause du dernier redémarrage. */
+void sysmon_log_boot_info(void);
+
+/* Tâche de surveillance : heap (journal toutes les 60 s, seuils §10), RSSI. */
+esp_err_t sysmon_start(void);
+
+void sysmon_set_safe_hook(sysmon_safe_hook_t hook);
+
+/* Redémarrage contrôlé : état de repli des appareils, puis esp_restart(). */
+void sysmon_restart(const char *reason);

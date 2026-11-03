@@ -9,6 +9,8 @@
 #include "net.h"
 #include "web.h"
 #include "sysmon.h"
+#include "http_util.h"
+#include "poll.h"
 
 static const char *TAG = "main";
 
@@ -47,6 +49,7 @@ void app_main(void)
     nvs_init();
     ESP_ERROR_CHECK(app_state_init());
     ESP_ERROR_CHECK(config_init());
+    ESP_ERROR_CHECK(http_util_init());
     sysmon_log_boot_info();
 
     ESP_ERROR_CHECK(esp_netif_init());
@@ -58,4 +61,7 @@ void app_main(void)
     ESP_ERROR_CHECK(net_start(&cfg));
     ESP_ERROR_CHECK(web_start());
     ESP_ERROR_CHECK(sysmon_start());
+    if (!net_is_setup_mode()) {
+        ESP_ERROR_CHECK(poll_start());
+    }
 }

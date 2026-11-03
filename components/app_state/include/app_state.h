@@ -21,20 +21,36 @@ typedef enum {
 } dev_id_t;
 
 typedef struct {
+    bool     configured;        /* adresse IP renseignée */
+    bool     ever_ok;           /* au moins une lecture réussie depuis le démarrage */
     uint32_t last_ok_ms;        /* dernière lecture réussie */
     uint32_t err_count;         /* erreurs cumulées depuis le démarrage */
     uint8_t  consecutive_err;
+    int32_t  last_err;          /* esp_err_t de la dernière erreur */
     bool     stale;             /* plus de 3 périodes sans lecture valide */
 } dev_status_t;
 
 typedef struct {
-    /* Mesures (remplies à partir du M1) */
+    int   ac_mode;
+    float input_limit_w;
+    float output_limit_w;
+    int   soc_set_pm;           /* ‰ */
+    int   min_soc_pm;           /* ‰ */
+} zendure_info_t;
+
+typedef struct {
+    /* Mesures */
     meas_t p_grid;
     meas_t p_pv;
     meas_t p_batt;
     meas_t p_ce;
     meas_t soc;
+    float  p_grid_phase[3];
+    bool   pv_from_eim;         /* faux : repli sur la production des micro-onduleurs */
+    bool   ce_relay_on;
+    zendure_info_t zendure;
     dev_status_t dev[DEV_COUNT];
+    bool   shelly_fallback;     /* Shelly invalide depuis plus de 30 s : mode repli (§8.1, §10) */
 
     /* Réseau */
     bool   wifi_connected;

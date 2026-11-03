@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#0a0a0a">
+<title>Gestionnaire solaire</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <h1><span class="mark" aria-hidden="true"></span>Solaire</h1>
+  <span id="conn" class="conn" role="status">…</span>
+</header>
+
+<nav class="tabs" aria-label="Pages">
+  <a href="#accueil">Accueil</a>
+  <a href="#previsions">Prévisions</a>
+  <a href="#historique">Historique</a>
+  <a href="#parametres">Paramètres</a>
+  <a href="#systeme">Système</a>
+</nav>
+
+<main>
+  <section id="accueil" class="page">
+    <div class="card empty">Diagramme des flux d'énergie : arrive au jalon M1.</div>
+  </section>
+  <section id="previsions" class="page">
+    <div class="card empty">Prévisions PV et consommation : arrivent au jalon M2.</div>
+  </section>
+  <section id="historique" class="page">
+    <div class="card empty">Historique 24 h / 7 jours : arrive au jalon M2.</div>
+  </section>
+  <section id="parametres" class="page">
+    <div class="card empty">Formulaire des paramètres : à venir. En attendant, WiFi et mot de passe
+      via <a href="/setup">la page de configuration</a>.</div>
+  </section>
+
+  <section id="systeme" class="page">
+    <div id="alerts" class="alerts" aria-live="polite"></div>
+    <div class="grid">
+      <article class="card"><h2>Firmware</h2><dl id="sys-fw"></dl></article>
+      <article class="card"><h2>Mémoire</h2><dl id="sys-mem"></dl></article>
+      <article class="card"><h2>Réseau</h2><dl id="sys-net"></dl></article>
+      <article class="card"><h2>Heure</h2><dl id="sys-time"></dl></article>
+      <article class="card"><h2>Matériel</h2><dl id="sys-hw"></dl></article>
+      <article class="card"><h2>Configuration</h2><dl id="sys-cfg"></dl></article>
+    </div>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -39,7 +39,7 @@ if(UNIX)
     target_link_libraries(algo PUBLIC m)
 endif()
 
-foreach(t flows tariff rls stats models)
+foreach(t flows tariff rls stats models planner regulator)
     add_executable(test_${t} test_${t}.c)
     target_link_libraries(test_${t} algo unity)
     add_test(NAME ${t} COMMAND test_${t})

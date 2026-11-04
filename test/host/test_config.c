@@ -172,6 +172,24 @@ static void test_passwords(void)
 static void test_v2_fields_follow_v1_layout(void)
 {
     TEST_ASSERT_EQUAL_UINT(CFG_V1_SIZE, offsetof(cfg_t, shelly));
+    TEST_ASSERT_EQUAL_UINT(CFG_V2_DATA, offsetof(cfg_t, tuya));
+}
+
+static void test_tuya_fields(void)
+{
+    TEST_ASSERT_EQUAL_UINT8(CE_DEV_OPENBEKEN, c.tuya.type);
+    c.tuya.type = CE_DEV_TUYA;
+    strcpy(c.tuya.dev_id, "bf1234567890abcdefgh");
+    strcpy(c.tuya.local_key, "a'b^c`d|e~f[g]h$");      /* caractères spéciaux courants */
+    TEST_ASSERT_NULL(cfg_validate(&c));
+    strcpy(c.tuya.local_key, "trop-courte");
+    TEST_ASSERT_EQUAL_STRING("dev.tuya_key", cfg_validate(&c));
+    c.tuya.local_key[0] = '\0';
+    c.tuya.version = 35;
+    TEST_ASSERT_EQUAL_STRING("dev.tuya_version", cfg_validate(&c));
+    c.tuya.version = 34;
+    strcpy(c.tuya.dev_id, "bf12-34");
+    TEST_ASSERT_EQUAL_STRING("dev.tuya_id", cfg_validate(&c));
 }
 
 static void test_shelly_mode_and_channel(void)
@@ -220,5 +238,6 @@ int main(void)
     RUN_TEST(test_hostname);
     RUN_TEST(test_v2_fields_follow_v1_layout);
     RUN_TEST(test_shelly_mode_and_channel);
+    RUN_TEST(test_tuya_fields);
     return UNITY_END();
 }

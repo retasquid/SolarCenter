@@ -13,6 +13,7 @@
 #include "poll.h"
 #include "forecast.h"
 #include "history.h"
+#include "drv_tuya.h"
 
 static const char *TAG = "main";
 
@@ -64,6 +65,7 @@ void app_main(void)
     ESP_ERROR_CHECK(web_start());
     ESP_ERROR_CHECK(sysmon_start());
     if (!net_is_setup_mode()) {
+        drv_tuya_selftest();
         ESP_ERROR_CHECK(forecast_start());
         ESP_ERROR_CHECK(history_start());
         ESP_ERROR_CHECK(poll_start());

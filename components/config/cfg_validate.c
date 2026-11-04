@@ -242,10 +242,31 @@ static const char *validate_shelly(const cfg_shelly_t *s)
     return NULL;
 }
 
+static bool is_alnum(char ch)
+{
+    return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9');
+}
+
+static const char *validate_tuya(const cfg_tuya_t *t)
+{
+    TRY(t->type <= CE_DEV_TUYA, "dev.tongou_type");
+    TRY(t->version == 33 || t->version == 34, "dev.tuya_version");
+    TRY(t->dp_switch >= 1, "dev.tuya_dp_switch");
+    TRY(t->dp_power >= 1, "dev.tuya_dp_power");
+    TRY(t->power_div >= 1 && t->power_div <= 1000, "dev.tuya_power_div");
+    TRY(terminated(t->dev_id, sizeof(t->dev_id)) && chars_in(t->dev_id, is_alnum), "dev.tuya_id");
+    TRY(terminated(t->local_key, sizeof(t->local_key)) && chars_in(t->local_key, is_printable) &&
+        (t->local_key[0] == '\0' || strlen(t->local_key) == 16), "dev.tuya_key");
+    return NULL;
+}
+
 const char *cfg_validate(const cfg_t *c)
 {
     const char *bad;
     if ((bad = validate_shelly(&c->shelly)) != NULL) {
+        return bad;
+    }
+    if ((bad = validate_tuya(&c->tuya)) != NULL) {
         return bad;
     }
     if ((bad = validate_tariff(&c->tariff)) != NULL) {

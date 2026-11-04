@@ -30,32 +30,50 @@ static SemaphoreHandle_t s_mtx;
 #define BLOB_HDR_SIZE offsetof(cfg_blob_t, cfg)
 
 _Static_assert(offsetof(cfg_t, shelly) == CFG_V1_SIZE, "les champs v2 doivent suivre cfg_t v1");
+_Static_assert(offsetof(cfg_t, tuya) == CFG_V2_DATA, "les champs v3 doivent suivre cfg_t v2");
 
 static uint32_t blob_crc(const cfg_blob_t *b, size_t size)
 {
     return esp_rom_crc32_le(0, (const uint8_t *)&b->cfg, size);
 }
 
-/* v1 → v2 : préfixe v1 recopié, champs ajoutés à leurs valeurs par défaut. */
-static cfg_status_t migrate_v1(size_t len)
+/* Anciennes versions : taille de cfg_t enregistrée (CRC) et octets utiles à recopier. */
+static const struct {
+    uint16_t version;
+    uint16_t size;
+    uint16_t data;
+} k_old_versions[] = {
+    { 1, CFG_V1_SIZE, CFG_V1_SIZE },
+    { 2, 1108, CFG_V2_DATA },           /* sizeof(cfg_t) v2 : 1106 octets utiles + 2 de remplissage */
+};
+
+/* Préfixe connu recopié, champs ajoutés à leurs valeurs par défaut. */
+static cfg_status_t migrate(size_t len)
 {
-    if (s_blob.size != CFG_V1_SIZE || len != BLOB_HDR_SIZE + CFG_V1_SIZE) {
-        return CFG_STATUS_RESET_VERSION;
+    for (size_t i = 0; i < sizeof(k_old_versions) / sizeof(k_old_versions[0]); i++) {
+        if (s_blob.version != k_old_versions[i].version) {
+            continue;
+        }
+        uint16_t size = k_old_versions[i].size;
+        if (s_blob.size != size || len != BLOB_HDR_SIZE + size) {
+            return CFG_STATUS_RESET_VERSION;
+        }
+        if (blob_crc(&s_blob, size) != s_blob.crc) {
+            return CFG_STATUS_RESET_CRC;
+        }
+        static cfg_t tmp;
+        cfg_set_defaults(&tmp);
+        memcpy(&tmp, &s_blob.cfg, k_old_versions[i].data);
+        const char *bad = cfg_validate(&tmp);
+        if (bad != NULL) {
+            ESP_LOGE(TAG, "config v%u invalide après migration (%s)", s_blob.version, bad);
+            return CFG_STATUS_RESET_INVALID;
+        }
+        memcpy(&s_cfg, &tmp, sizeof(s_cfg));
+        ESP_LOGW(TAG, "config migrée de v%u vers v%d", s_blob.version, CFG_VERSION);
+        return CFG_STATUS_MIGRATED;
     }
-    if (blob_crc(&s_blob, CFG_V1_SIZE) != s_blob.crc) {
-        return CFG_STATUS_RESET_CRC;
-    }
-    static cfg_t tmp;
-    cfg_set_defaults(&tmp);
-    memcpy(&tmp, &s_blob.cfg, CFG_V1_SIZE);
-    const char *bad = cfg_validate(&tmp);
-    if (bad != NULL) {
-        ESP_LOGE(TAG, "config v1 invalide après migration (%s)", bad);
-        return CFG_STATUS_RESET_INVALID;
-    }
-    memcpy(&s_cfg, &tmp, sizeof(s_cfg));
-    ESP_LOGW(TAG, "config migrée de v1 vers v%d", CFG_VERSION);
-    return CFG_STATUS_MIGRATED;
+    return CFG_STATUS_RESET_VERSION;
 }
 
 static cfg_status_t load(void)
@@ -84,8 +102,8 @@ static cfg_status_t load(void)
         ESP_LOGE(TAG, "nvs_get_blob : %s", esp_err_to_name(err));
         return CFG_STATUS_RESET_READ;
     }
-    if (len >= BLOB_HDR_SIZE && s_blob.version == 1) {
-        return migrate_v1(len);
+    if (len >= BLOB_HDR_SIZE && s_blob.version < CFG_VERSION) {
+        return migrate(len);
     }
     if (len != sizeof(s_blob) || s_blob.version != CFG_VERSION || s_blob.size != sizeof(cfg_t)) {
         return CFG_STATUS_RESET_VERSION;

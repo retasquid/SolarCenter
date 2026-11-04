@@ -199,7 +199,7 @@ Timeout HTTP **3 s**, au plus 1 nouvel essai, puis `valid = false`. Ne **jamais*
 - Commande : `GET http://<ip>/cm?cmnd=POWER%20ON` / `POWER%20OFF`.
 - État et puissance : `GET http://<ip>/cm?cmnd=Status%2010` → `StatusSNS.ENERGY.Power`. `TODO(verify)` : la commande exacte et le chemin JSON dépendent de la version d'OpenBeken.
 - **Sécurité côté appareil (obligatoire avant le M4)** : script `autoexec.bat` sur le Tongou qui coupe le relais si aucun battement de cœur n'est reçu de l'ESP32 depuis 10 min. L'ESP32 envoie ce battement toutes les 60 s quand le relais doit rester allumé. `TODO(verify)` : syntaxe de script OpenBeken (`addRepeatingEvent`, variables de canal) à vérifier dans la documentation avant écriture.
-- Firmware Tuya d'origine : **hors périmètre v1**.
+- Firmware Tuya d'origine : ajouté à la demande de l'utilisateur (2026-11-04). Protocole local chiffré 3.3 / 3.4 (TCP 6668, AES-128-ECB, CRC32 ou HMAC-SHA256, clé de session en 3.4), d'après tinytuya. Composant `drv_tuya` (protocole en C pur testé octet par octet contre `tools/tuya_ref.py`). Config `tongou_type` = `tuya`, avec identifiant, clé locale, version et DP. `TODO(verify)` : DP du relais et de la puissance (par défaut 1 et 19, puissance en 0,1 W), à relever avec `python tools/tuya_ref.py probe`. La sécurité côté appareil (`autoexec.bat`) n'existe pas sous Tuya : à revoir avant le M4.
 
 ### 8.5 Open-Meteo
 - `GET https://api.open-meteo.com/v1/forecast?latitude=<lat>&longitude=<lon>&hourly=global_tilted_irradiance,temperature_2m&tilt=<inclinaison>&azimuth=<azimut>&timezone=auto&forecast_days=2`

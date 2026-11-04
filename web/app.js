@@ -568,6 +568,13 @@ const SCHEMA = [
     { k: 'zendure_ip', l: 'IP SolarFlow', t: 'ip' },
     { k: 'zendure_sn', l: 'N° de série SolarFlow', t: 'text', max: 31 },
     { k: 'tongou_ip', l: 'IP Tongou', t: 'ip' },
+    { k: 'tongou_type', l: 'Firmware du Tongou', t: 'select', opts: [['openbeken', 'OpenBeken (API HTTP)'], ['tuya', 'Tuya d\'origine (protocole local chiffré)']] },
+    { k: 'tuya_version', l: 'Version du protocole Tuya', t: 'select', opts: [['3.3', '3.3'], ['3.4', '3.4']] },
+    { k: 'tuya_id', l: 'Identifiant Tuya (device id)', t: 'text', max: 23, pattern: '[A-Za-z0-9]*' },
+    { k: 'tuya_key', l: 'Clé locale Tuya', t: 'secret', help: '16 caractères. Vide = conserver.' },
+    { k: 'tuya_dp_switch', l: 'DP du relais', t: 'int', min: 1, max: 255 },
+    { k: 'tuya_dp_power', l: 'DP de la puissance', t: 'int', min: 1, max: 255, help: 'À vérifier avec tools/tuya_ref.py probe.' },
+    { k: 'tuya_power_div', l: 'Diviseur de puissance', t: 'int', min: 1, max: 1000, help: 'W = valeur brute ÷ diviseur (souvent 10).' },
   ] },
   { sec: 'sys', title: 'Système', fields: [
     { k: 'poll_ms', l: 'Période de sondage du Shelly', t: 'int', min: 1000, max: 10000, u: 'ms' },
@@ -738,6 +745,7 @@ function readSection(s) {
     } else if (f.t === 'secret') {
       if (f.k === 'admin_pass' && v && v.length < 8) fail('8 caractères minimum');
       if (f.k === 'wifi_pass' && v && v.length < 8) fail('8 caractères minimum');
+      if (f.k === 'tuya_key' && v && v.length !== 16) fail('16 caractères exactement');
       out[f.k] = v || '***';
     } else if (f.t === 'time') {
       if (!/^\d\d:\d\d$/.test(v)) fail('heure HH:MM attendue');

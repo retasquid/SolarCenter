@@ -112,6 +112,13 @@ cJSON *cfg_to_json(const cfg_t *c)
     cJSON_AddStringToObject(d, "shelly_mode", c->shelly.mode <= SHELLY_MODE_MONOPHASE
                                               ? shelly_modes[c->shelly.mode] : "auto");
     cJSON_AddNumberToObject(d, "shelly_channel", c->shelly.channel);
+    cJSON_AddStringToObject(d, "tongou_type", c->tuya.type == CE_DEV_TUYA ? "tuya" : "openbeken");
+    cJSON_AddStringToObject(d, "tuya_version", c->tuya.version == 34 ? "3.4" : "3.3");
+    cJSON_AddStringToObject(d, "tuya_id", c->tuya.dev_id);
+    add_secret(d, "tuya_key", c->tuya.local_key);
+    cJSON_AddNumberToObject(d, "tuya_dp_switch", c->tuya.dp_switch);
+    cJSON_AddNumberToObject(d, "tuya_dp_power", c->tuya.dp_power);
+    cJSON_AddNumberToObject(d, "tuya_power_div", c->tuya.power_div);
 
     add_secret(s, "admin_pass", c->sys.admin_pass);
     cJSON_AddNumberToObject(s, "poll_ms", c->sys.poll_ms);
@@ -406,6 +413,39 @@ static const char *shelly_from_json(const cJSON *o, cfg_shelly_t *s)
     return NULL;
 }
 
+/* Champs v3 de l'interrupteur Tuya, exposés dans la section "dev". */
+static const char *tuya_from_json(const cJSON *o, cfg_tuya_t *t)
+{
+    const cJSON *type = item(o, "tongou_type");
+    if (type != NULL) {
+        TRY(cJSON_IsString(type), "dev.tongou_type");
+        if (strcmp(type->valuestring, "openbeken") == 0) {
+            t->type = CE_DEV_OPENBEKEN;
+        } else if (strcmp(type->valuestring, "tuya") == 0) {
+            t->type = CE_DEV_TUYA;
+        } else {
+            return "dev.tongou_type";
+        }
+    }
+    const cJSON *ver = item(o, "tuya_version");
+    if (ver != NULL) {
+        TRY(cJSON_IsString(ver), "dev.tuya_version");
+        if (strcmp(ver->valuestring, "3.3") == 0) {
+            t->version = 33;
+        } else if (strcmp(ver->valuestring, "3.4") == 0) {
+            t->version = 34;
+        } else {
+            return "dev.tuya_version";
+        }
+    }
+    TRY(json_get_str(o, "tuya_id", t->dev_id, sizeof(t->dev_id), false), "dev.tuya_id");
+    TRY(json_get_str(o, "tuya_key", t->local_key, sizeof(t->local_key), true), "dev.tuya_key");
+    TRY(get_u8(o, "tuya_dp_switch", &t->dp_switch), "dev.tuya_dp_switch");
+    TRY(get_u8(o, "tuya_dp_power", &t->dp_power), "dev.tuya_dp_power");
+    TRY(get_u16(o, "tuya_power_div", &t->power_div), "dev.tuya_power_div");
+    return NULL;
+}
+
 static const char *sys_from_json(const cJSON *o, cfg_sys_t *s)
 {
     TRY(json_get_str(o, "admin_pass", s->admin_pass, sizeof(s->admin_pass), true), "sys.admin_pass");
@@ -438,6 +478,7 @@ const char *cfg_from_json(const cJSON *root, cfg_t *c)
     SECTION("roi", roi_from_json, &c->roi);
     SECTION("dev", dev_from_json, &c->dev);
     SECTION("dev", shelly_from_json, &c->shelly);
+    SECTION("dev", tuya_from_json, &c->tuya);
     SECTION("sys", sys_from_json, &c->sys);
     return NULL;
 }

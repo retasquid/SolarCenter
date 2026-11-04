@@ -3,6 +3,7 @@
 #include "esp_log.h"
 #include "cJSON.h"
 #include "http_util.h"
+#include "drv_tuya.h"
 #include "drv_tongou.h"
 
 static const char *TAG = "drv_tongou";
@@ -76,6 +77,15 @@ static esp_err_t get(const char *fmt, const char *ip, size_t *len)
 
 esp_err_t drv_tongou_poll(const cfg_t *cfg, tongou_reading_t *out)
 {
+    if (cfg->tuya.type == CE_DEV_TUYA) {
+        tuya_reading_t r;
+        esp_err_t terr = drv_tuya_poll(cfg, &r);
+        if (terr == ESP_OK) {
+            out->relay_on = r.relay_on;
+            out->power_w = r.power_w;
+        }
+        return terr;
+    }
     size_t len;
     esp_err_t err = get(TONGOU_URL_ENERGY, cfg->dev.tongou_ip, &len);
     if (err == ESP_OK) {

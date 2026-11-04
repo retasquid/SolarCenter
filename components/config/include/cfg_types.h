@@ -5,8 +5,11 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define CFG_VERSION         2
+#define CFG_VERSION         3
 #define CFG_V1_SIZE         1104    /* taille de cfg_t en v1 : les champs v2 sont ajoutés après */
+#define CFG_V2_DATA         1106    /* octets utiles de cfg_t en v2 (fin de cfg_shelly_t) */
+#define CFG_TUYA_ID_LEN     24
+#define CFG_TUYA_KEY_LEN    17      /* clé locale : 16 caractères + NUL */
 
 #define CFG_HC_SLOTS_MAX    4
 #define CFG_IP_LEN          16      /* "255.255.255.255" + NUL */
@@ -110,6 +113,22 @@ typedef struct {
     uint8_t channel;            /* canal EM1 du compteur réseau en monophasé (0–2) */
 } cfg_shelly_t;
 
+typedef enum {
+    CE_DEV_OPENBEKEN = 0,       /* API HTTP compatible Tasmota (§8.4) */
+    CE_DEV_TUYA = 1,            /* firmware Tuya d'origine, protocole local chiffré (choix utilisateur) */
+} ce_dev_type_t;
+
+/* v3. Interrupteur du chauffe-eau sous firmware Tuya. */
+typedef struct {
+    uint8_t  type;              /* ce_dev_type_t */
+    uint8_t  version;           /* 33 ou 34 (protocole 3.3 / 3.4) */
+    uint8_t  dp_switch;         /* DP du relais (booléen) */
+    uint8_t  dp_power;          /* DP de la puissance */
+    uint16_t power_div;         /* W = valeur brute / power_div */
+    char     dev_id[CFG_TUYA_ID_LEN];
+    char     local_key[CFG_TUYA_KEY_LEN];
+} cfg_tuya_t;
+
 typedef struct {
     cfg_tariff_t tariff;
     cfg_pv_t     pv;
@@ -118,8 +137,9 @@ typedef struct {
     cfg_roi_t    roi;
     cfg_dev_t    dev;
     cfg_sys_t    sys;
-    /* ---- v2 : ajouts en fin de structure uniquement (migration par recopie du préfixe v1) ---- */
-    cfg_shelly_t shelly;
+    /* ---- ajouts en fin de structure uniquement (migration par recopie du préfixe connu) ---- */
+    cfg_shelly_t shelly;        /* v2 */
+    cfg_tuya_t   tuya;          /* v3 */
 } cfg_t;
 
 void cfg_set_defaults(cfg_t *c);

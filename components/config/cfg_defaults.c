@@ -54,6 +54,14 @@ void cfg_set_defaults(cfg_t *c)
     c->shelly.mode = SHELLY_MODE_AUTO;
     c->shelly.channel = 0;
 
+    /* TODO(verify) : DP courants des prises Tuya avec mesure (1 = relais, 19 = puissance en 0,1 W),
+     * à confirmer sur l'appareil avec « python tools/tuya_ref.py probe ». */
+    c->tuya.type = CE_DEV_OPENBEKEN;
+    c->tuya.version = 33;
+    c->tuya.dp_switch = 1;
+    c->tuya.dp_power = 19;
+    c->tuya.power_div = 10;
+
     c->sys.poll_ms = 2000;
     c->sys.observer = true;         /* aucune commande tant que l'utilisateur ne l'a pas décidé */
     strcpy(c->sys.hostname, "solaire");

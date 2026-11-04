@@ -874,6 +874,7 @@ function drawChart(box, cfg) {
     }
   }
   if (hi - lo < 1) hi = lo + 1;
+  if (cfg.yMax == null) hi += (hi - lo) * 0.05;     // marge : la courbe ne colle pas au bord
   const step = niceStep(hi - lo, 4);
   hi = Math.ceil(hi / step) * step;
   lo = Math.floor(lo / step) * step;
@@ -959,7 +960,22 @@ function drawChart(box, cfg) {
   hit.addEventListener('pointerleave', () => { cross.setAttribute('visibility', 'hidden'); tip().hidden = true; });
 
   box.replaceChildren(root);
+  box.chartCfg = cfg;
+  box.chartWidth = W;
+  chartResize.observe(box);
 }
+
+// Redessine un graphique quand la largeur de son conteneur change (barre de défilement qui
+// apparaît, rotation, panneau) : le SVG est dessiné à la largeur mesurée.
+const chartResize = new ResizeObserver((entries) => {
+  for (const e of entries) {
+    const box = e.target;
+    const w = Math.max(280, Math.round(box.clientWidth));
+    if (box.chartCfg && box.offsetParent !== null && Math.abs(w - box.chartWidth) > 2) {
+      requestAnimationFrame(() => drawChart(box, box.chartCfg));
+    }
+  }
+});
 
 const fmtWaxis = (v, axis) => (axis && Math.abs(v) >= 1000 ? fr(v / 1000, 1) + ' k' : Math.round(v) + (axis ? '' : ' W'));
 
@@ -1253,15 +1269,6 @@ segment('#gauge-period', 'p', (p) => { gaugePeriod = p; refreshHome(); });
 segment('#fc-day', 'd', (d) => { fcDay = Number(d); loadForecast(); });
 segment('#hist-range', 'r', (r) => { histRange = r; loadHistory(); });
 $('#hist-table').addEventListener('toggle', () => { if ($('#hist-table').open) buildHistTable(); });
-let resizeTimer = null;
-window.addEventListener('resize', () => {
-  clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => {
-    const page = location.hash.slice(1);
-    if (page === 'previsions') loadForecast();
-    if (page === 'historique') renderHistory();
-  }, 250);
-});
 
 buildDiagram();
 buildForm();

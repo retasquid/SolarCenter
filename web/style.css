@@ -174,7 +174,7 @@ dd.dim { color: var(--text-3); }
 @media (min-width: 900px) { .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .chart-card { margin-bottom: 12px; }
 .chart { width: 100%; min-height: 120px; color: var(--text-3); font-size: 13px; }
-.chart svg { display: block; touch-action: pan-y; }
+.chart svg { display: block; max-width: 100%; height: auto; touch-action: pan-y; }
 .chart .grid { stroke: var(--line); stroke-width: 1; }
 .chart .axis0 { stroke: var(--text-3); stroke-width: 1; }
 .chart .tick { fill: var(--text-3); font-size: 11px; font-variant-numeric: tabular-nums; }

@@ -35,10 +35,9 @@ static esp_err_t get_once(const http_req_t *req, char *buf, size_t cap, size_t *
     };
     if (req->tls == HTTP_TLS_BUNDLE) {
         c.crt_bundle_attach = esp_crt_bundle_attach;
-    } else if (req->tls == HTTP_TLS_INSECURE) {
-        /* Aucune option de vérification : esp-tls applique CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY. */
-        c.skip_cert_common_name_check = true;
     }
+    /* HTTP_TLS_INSECURE : aucune option de vérification, esp-tls applique
+     * CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY (le nom du serveur n'est alors pas vérifié non plus). */
 
     esp_http_client_handle_t h = esp_http_client_init(&c);
     if (h == NULL) {

@@ -33,6 +33,22 @@ esp_err_t api_register(httpd_handle_t srv);
 /* État instantané (mesures, flux, appareils), partagé par /api/state et /ws. */
 cJSON *state_to_json(void);
 
+/* Historique, prévisions, statistiques, réinitialisation des modèles. */
+esp_err_t api_hist_register(httpd_handle_t srv);
+
+/* Écriture JSON par morceaux (réponses longues sans arbre cJSON en mémoire). */
+typedef struct {
+    httpd_req_t *req;
+    char         buf[1024];
+    size_t       len;
+    esp_err_t    err;
+} jw_t;
+
+void jw_begin(jw_t *w, httpd_req_t *req);
+void jw_printf(jw_t *w, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+void jw_num(jw_t *w, float v, int decimals);     /* "null" si non fini */
+esp_err_t jw_end(jw_t *w);
+
 /* Conversion de la config ; les secrets sont renvoyés "***" s'ils sont définis. */
 cJSON *cfg_to_json(const cfg_t *c);
 

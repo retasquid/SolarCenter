@@ -3,6 +3,7 @@
 #include "app_state.h"
 #include "config.h"
 #include "flows.h"
+#include "tariff.h"
 #include "web_priv.h"
 
 static const char *k_dev_keys[DEV_COUNT] = { "shelly", "envoy", "zendure", "tongou" };
@@ -16,6 +17,36 @@ static void add_w(cJSON *o, const char *k, float w)
 static bool usable(const meas_t *m, const dev_status_t *d)
 {
     return m->valid && d->configured && !d->stale;
+}
+
+/* Tarif en vigueur et prochain changement (carte de l'accueil). */
+static void add_tariff(cJSON *r, bool time_ok)
+{
+    static cfg_t cfg;   /* hors pile ; appelé seulement depuis la tâche httpd */
+    config_get(&cfg);
+    cJSON *t = cJSON_AddObjectToObject(r, "tariff");
+    if (t == NULL) {
+        return;
+    }
+    cJSON_AddBoolToObject(t, "configured", cfg.tariff.configured);
+    cJSON_AddBoolToObject(t, "hphc", cfg.tariff.type == TARIFF_HPHC);
+    if (!cfg.tariff.configured || !time_ok) {
+        return;
+    }
+    tariff_t tf;
+    config_tariff(&cfg, &tf);
+    time_t now = time(NULL);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    uint16_t minute = (uint16_t)(tm.tm_hour * 60 + tm.tm_min);
+    bool next_hc = false;
+    uint16_t next = tariff_next_change(&tf, minute, &next_hc);
+    cJSON_AddBoolToObject(t, "hc", tariff_is_hc(&tf, minute));
+    cJSON_AddNumberToObject(t, "price", (double)lroundf(tariff_price(&tf, minute) * 10000.0f) / 10000.0);
+    if (next > 0) {
+        cJSON_AddNumberToObject(t, "next_min", next);
+        cJSON_AddBoolToObject(t, "next_hc", next_hc);
+    }
 }
 
 static cJSON *add_meas(cJSON *r, const char *k, const meas_t *m, const dev_status_t *d, uint32_t now)
@@ -50,6 +81,7 @@ cJSON *state_to_json(void)
 
     cJSON *grid = add_meas(r, "grid", &st.p_grid, &dv[DEV_SHELLY], now);
     if (grid != NULL) {
+        cJSON_AddBoolToObject(grid, "mono", st.grid_mono);
         cJSON *ph = cJSON_AddArrayToObject(grid, "phases");
         for (int i = 0; i < 3 && ph != NULL; i++) {
             cJSON_AddItemToArray(ph, cJSON_CreateNumber((double)lroundf(st.p_grid_phase[i])));
@@ -75,19 +107,12 @@ cJSON *state_to_json(void)
     }
 
     /* Flux : le Shelly est indispensable ; un appareil absent de la config compte pour 0 W. */
-    bool grid_ok = usable(&st.p_grid, &dv[DEV_SHELLY]);
-    bool pv_ok = !dv[DEV_ENVOY].configured || usable(&st.p_pv, &dv[DEV_ENVOY]);
-    bool batt_ok = !dv[DEV_ZENDURE].configured || usable(&st.p_batt, &dv[DEV_ZENDURE]);
-    bool ce_ok = !dv[DEV_TONGOU].configured || usable(&st.p_ce, &dv[DEV_TONGOU]);
-    const flows_in_t in = {
-        .p_grid = grid_ok ? st.p_grid.value : 0.0f,
-        .p_pv = usable(&st.p_pv, &dv[DEV_ENVOY]) ? st.p_pv.value : 0.0f,
-        .p_batt = usable(&st.p_batt, &dv[DEV_ZENDURE]) ? st.p_batt.value : 0.0f,
-        .p_ce = usable(&st.p_ce, &dv[DEV_TONGOU]) ? st.p_ce.value : 0.0f,
-    };
+    flows_in_t in;
+    bool flows_ok;
+    bool grid_ok = app_state_flows_in(&st, &in, &flows_ok);
+    flows_ok = flows_ok && grid_ok;
     flows_t f;
     flows_split(&in, &f);
-    bool flows_ok = grid_ok && pv_ok && batt_ok && ce_ok;
 
     cJSON *home = cJSON_AddObjectToObject(r, "home");
     if (home != NULL) {
@@ -108,6 +133,8 @@ cJSON *state_to_json(void)
         add_w(fl, "home_ce", f.home_ce);
         add_w(fl, "ce_local", f.ce_local);
     }
+
+    add_tariff(r, st.time_synced);
 
     cJSON *devs = cJSON_AddObjectToObject(r, "dev");
     for (int i = 0; i < DEV_COUNT && devs != NULL; i++) {

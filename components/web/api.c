@@ -12,6 +12,7 @@
 #include "net.h"
 #include "sysmon.h"
 #include "jwt_exp.h"
+#include "forecast.h"
 #include "web_priv.h"
 
 static const char *TAG = "web";
@@ -163,6 +164,7 @@ static esp_err_t config_post_handler(httpd_req_t *req)
     config_get(&s_cfg);
     cfg_sys_t old_sys;
     memcpy(&old_sys, &s_cfg.sys, sizeof(old_sys));
+    cfg_pv_t old_pv = s_cfg.pv;
     const char *bad = cfg_from_json(root, &s_cfg);
     cJSON_Delete(root);
     if (bad != NULL) {
@@ -175,6 +177,9 @@ static esp_err_t config_post_handler(httpd_req_t *req)
     memset(&old_sys, 0, sizeof(old_sys));
     bool saved;
     err = save_and_reply(req, reboot, &saved);
+    if (saved && memcmp(&old_pv, &s_cfg.pv, sizeof(old_pv)) != 0) {
+        forecast_refresh();     /* coordonnées ou orientation modifiées */
+    }
     if (saved && reboot) {
         ESP_LOGI(TAG, "WiFi ou nom réseau modifié : redémarrage");
         if (esp_timer_start_once(s_reboot_timer, SETUP_REBOOT_DELAY_US) != ESP_OK) {
@@ -252,5 +257,5 @@ esp_err_t api_register(httpd_handle_t srv)
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
         ESP_RETURN_ON_ERROR(httpd_register_uri_handler(srv, &routes[i]), TAG, "%s", routes[i].uri);
     }
-    return ESP_OK;
+    return api_hist_register(srv);
 }

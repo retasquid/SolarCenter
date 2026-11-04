@@ -31,13 +31,15 @@ add_test(NAME config COMMAND test_config)
 
 # Tout algo/ en une bibliothèque : la règle d'or (C pur) est vérifiée à la compilation sur PC.
 file(GLOB ALGO_SRCS "${COMP}/algo/*.c")
+# Garde-fou : l'extension CMake Tools de VS Code ajoute d'elle-même les nouveaux test_*.c ici.
+list(FILTER ALGO_SRCS EXCLUDE REGEX "/test_[^/]*\\.c$")
 add_library(algo STATIC ${ALGO_SRCS})
 target_include_directories(algo PUBLIC "${COMP}/algo/include")
 if(UNIX)
     target_link_libraries(algo PUBLIC m)
 endif()
 
-foreach(t flows tariff rls stats)
+foreach(t flows tariff rls stats models)
     add_executable(test_${t} test_${t}.c)
     target_link_libraries(test_${t} algo unity)
     add_test(NAME ${t} COMMAND test_${t})

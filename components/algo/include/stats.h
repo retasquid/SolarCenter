@@ -18,16 +18,27 @@ typedef struct {
     float e_batt_dis;
     float e_ce;
     float e_ce_local;
+    /* Énergies par flux (diagramme en kWh, surplus solaire = pv_batt + pv_grid) */
+    float e_pv_home;
+    float e_pv_batt;
+    float e_pv_grid;
+    float e_grid_home;
+    float e_grid_batt;
+    float e_batt_home;
     float c_real;           /* import × prix(t) − export × prix_revente */
     float c_no_batt;        /* même calcul avec p_grid + p_batt */
     float c_no_install;     /* e_home × prix(t) */
     float hc_ce_value;      /* e_ce_local × prix_HC, en € (routage du chauffe-eau) */
+    float secs_grid;        /* durée intégrée avec le Shelly valide */
+    float secs_full;        /* durée intégrée avec toutes les mesures valides */
 } energy_acc_t;
 
 /* Intègre un pas par la méthode des trapèzes entre deux échantillons.
+ * full = faux (PV, batterie ou chauffe-eau inconnus) : seuls import, export et coût réel,
+ * mesurés par le Shelly, sont intégrés.
  * Retourne faux (rien n'est ajouté) si dt ≤ 0 ou dt > STATS_MAX_DT_S. */
 bool stats_integrate(energy_acc_t *acc, const flows_in_t *prev, const flows_in_t *cur, float dt_s,
-                     float price_buy, float price_sell, float price_hc);
+                     bool full, float price_buy, float price_sell, float price_hc);
 
 void stats_add(energy_acc_t *dst, const energy_acc_t *src);
 

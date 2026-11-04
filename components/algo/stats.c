@@ -14,17 +14,29 @@ static float trap(float a, float b, float dt_s)
 }
 
 bool stats_integrate(energy_acc_t *acc, const flows_in_t *prev, const flows_in_t *cur, float dt_s,
-                     float price_buy, float price_sell, float price_hc)
+                     bool full, float price_buy, float price_sell, float price_hc)
 {
     if (!(dt_s > 0.0f && dt_s <= STATS_MAX_DT_S)) {
         return false;
     }
+    const float kwh = 1.0f / 1000.0f;
+    float e_imp = trap(pos(prev->p_grid), pos(cur->p_grid), dt_s);
+    float e_exp = trap(pos(-prev->p_grid), pos(-cur->p_grid), dt_s);
+    acc->e_import += e_imp;
+    acc->e_export += e_exp;
+    float c_step = (e_imp * price_buy - e_exp * price_sell) * kwh;
+    acc->c_real += c_step;
+    acc->secs_grid += dt_s;
+    if (!full) {
+        /* Contrefactuels inconnus : gain neutre sur ce pas. */
+        acc->c_no_batt += c_step;
+        acc->c_no_install += c_step;
+        return true;
+    }
+
     flows_t f0, f1;
     flows_split(prev, &f0);
     flows_split(cur, &f1);
-
-    float e_imp = trap(pos(prev->p_grid), pos(cur->p_grid), dt_s);
-    float e_exp = trap(pos(-prev->p_grid), pos(-cur->p_grid), dt_s);
     /* Sans batterie : ce qu'elle a fourni aurait été importé, ce qu'elle a stocké exporté.
      * Séparation import/export après ce recalcul (§9.9). */
     float sb0 = prev->p_grid + prev->p_batt;
@@ -35,19 +47,22 @@ bool stats_integrate(energy_acc_t *acc, const flows_in_t *prev, const flows_in_t
     float e_ce_local = trap(f0.ce_local, f1.ce_local, dt_s);
 
     acc->e_pv += trap(pos(prev->p_pv), pos(cur->p_pv), dt_s);
-    acc->e_import += e_imp;
-    acc->e_export += e_exp;
     acc->e_home += e_home;
     acc->e_batt_ch += trap(pos(-prev->p_batt), pos(-cur->p_batt), dt_s);
     acc->e_batt_dis += trap(pos(prev->p_batt), pos(cur->p_batt), dt_s);
     acc->e_ce += trap(pos(prev->p_ce), pos(cur->p_ce), dt_s);
     acc->e_ce_local += e_ce_local;
+    acc->e_pv_home += trap(f0.pv_home, f1.pv_home, dt_s);
+    acc->e_pv_batt += trap(f0.pv_batt, f1.pv_batt, dt_s);
+    acc->e_pv_grid += trap(f0.pv_grid, f1.pv_grid, dt_s);
+    acc->e_grid_home += trap(f0.grid_home, f1.grid_home, dt_s);
+    acc->e_grid_batt += trap(f0.grid_batt, f1.grid_batt, dt_s);
+    acc->e_batt_home += trap(f0.batt_home, f1.batt_home, dt_s);
 
-    const float kwh = 1.0f / 1000.0f;
-    acc->c_real += (e_imp * price_buy - e_exp * price_sell) * kwh;
     acc->c_no_batt += (e_imp_sb * price_buy - e_exp_sb * price_sell) * kwh;
     acc->c_no_install += e_home * price_buy * kwh;
     acc->hc_ce_value += e_ce_local * price_hc * kwh;
+    acc->secs_full += dt_s;
     return true;
 }
 

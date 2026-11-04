@@ -19,7 +19,7 @@ void tearDown(void)
 static void run(energy_acc_t *acc, flows_in_t in, int seconds, float price)
 {
     for (int t = 0; t < seconds; t += 2) {
-        stats_integrate(acc, &in, &in, 2.0f, price, SELL, HC);
+        stats_integrate(acc, &in, &in, 2.0f, true, price, SELL, HC);
     }
 }
 
@@ -37,11 +37,43 @@ static void test_trapezoid_and_dt_guard(void)
 {
     energy_acc_t a = { 0 };
     flows_in_t p0 = { .p_grid = 0 }, p1 = { .p_grid = 3600 };
-    TEST_ASSERT_TRUE(stats_integrate(&a, &p0, &p1, 2.0f, HP, SELL, HC));
+    TEST_ASSERT_TRUE(stats_integrate(&a, &p0, &p1, 2.0f, true, HP, SELL, HC));
     TEST_ASSERT_FLOAT_WITHIN(1e-4f, 1.0f, a.e_import);   /* (0 + 3600)/2 × 2 s = 1 Wh */
-    TEST_ASSERT_FALSE(stats_integrate(&a, &p0, &p1, 10.5f, HP, SELL, HC));
-    TEST_ASSERT_FALSE(stats_integrate(&a, &p0, &p1, 0.0f, HP, SELL, HC));
+    TEST_ASSERT_FALSE(stats_integrate(&a, &p0, &p1, 10.5f, true, HP, SELL, HC));
+    TEST_ASSERT_FALSE(stats_integrate(&a, &p0, &p1, 0.0f, true, HP, SELL, HC));
     TEST_ASSERT_FLOAT_WITHIN(1e-4f, 1.0f, a.e_import);
+}
+
+/* Shelly seul valide : import/export et coût réel comptés, gains neutres. */
+static void test_partial_integration_grid_only(void)
+{
+    energy_acc_t a = { 0 };
+    flows_in_t in = { .p_pv = 5000, .p_grid = 1000, .p_batt = 800 };    /* PV et batterie non fiables */
+    for (int t = 0; t < 3600; t += 2) {
+        stats_integrate(&a, &in, &in, 2.0f, false, HP, SELL, HC);
+    }
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 1000.0f, a.e_import);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, a.e_pv);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, a.e_home);
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, 3600.0f, a.secs_grid);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, a.secs_full);
+    rates_t r;
+    stats_rates(&a, 0.05f, &r);
+    TEST_ASSERT_FLOAT_WITHIN(1e-5f, 0.0f, r.gain_batt);
+    TEST_ASSERT_FLOAT_WITHIN(1e-5f, 0.0f, r.gain_total);
+}
+
+/* Énergies par flux : conservation sur une heure mixte. */
+static void test_flow_energies_conserve(void)
+{
+    energy_acc_t a = { 0 };
+    run(&a, (flows_in_t){ .p_pv = 3000, .p_grid = -700, .p_batt = -1500 }, 1800, HP);
+    run(&a, (flows_in_t){ .p_pv = 0, .p_grid = 400, .p_batt = 800 }, 1800, HP);
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, a.e_pv, a.e_pv_home + a.e_pv_batt + a.e_pv_grid);
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, a.e_home, a.e_pv_home + a.e_batt_home + a.e_grid_home);
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, a.e_batt_ch, a.e_pv_batt + a.e_grid_batt);
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 750.0f, a.e_pv_batt);
+    TEST_ASSERT_FLOAT_WITHIN(0.5f, 400.0f, a.e_batt_home);
 }
 
 static void test_known_rates(void)
@@ -173,6 +205,8 @@ int main(void)
     UNITY_BEGIN();
     RUN_TEST(test_constant_import_one_hour);
     RUN_TEST(test_trapezoid_and_dt_guard);
+    RUN_TEST(test_partial_integration_grid_only);
+    RUN_TEST(test_flow_energies_conserve);
     RUN_TEST(test_known_rates);
     RUN_TEST(test_no_battery_activity_gives_zero_gain);
     RUN_TEST(test_battery_gain_sign_typical_day);

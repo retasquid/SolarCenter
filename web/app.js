@@ -107,6 +107,8 @@ function showPage() {
     else a.removeAttribute('aria-current');
   });
   if (id === 'parametres') loadConfig();
+  if (id === 'previsions') loadForecast();
+  if (id === 'historique') loadHistory();
 }
 
 // ---------- Diagramme des flux ----------
@@ -349,7 +351,9 @@ let pollTimer = null;
 function onState(s) {
   lastState = s;
   pushHistory(s);
-  renderFlows(s);
+  if (unit === 'w') renderFlows(s);
+  else setRing(nodeEls.soc, 0, s.batt.soc_ok ? s.batt.soc / 100 : 0);
+  renderTariff(s.tariff);
   renderFlowAlerts(s);
   renderDevices(s);
   drawSpark();
@@ -406,6 +410,7 @@ const RESET_REASONS = {
 
 const CFG_STATUS = {
   ok: 'chargée',
+  migrated: 'migrée vers la nouvelle version (valeurs conservées)',
   first_boot: 'premier démarrage (valeurs par défaut)',
   reset_version: 'version changée : valeurs par défaut',
   reset_crc: 'corrompue : valeurs par défaut',
@@ -422,7 +427,7 @@ function tokenInfo(s) {
 function renderAlerts(s) {
   const list = [];
   if (!s.admin_set) list.push(['Mot de passe administrateur non défini : ouvrez la page de configuration (/setup).']);
-  if (s.cfg_status !== 'ok' && s.cfg_status !== 'first_boot') {
+  if (s.cfg_status !== 'ok' && s.cfg_status !== 'first_boot' && s.cfg_status !== 'migrated') {
     list.push([`Configuration ${CFG_STATUS[s.cfg_status] || s.cfg_status}. Vérifiez les paramètres.`]);
   }
   if (!s.tariff_configured) list.push(['Tarif non saisi : aucune régulation basée sur les prix tant qu\'il manque.']);
@@ -554,6 +559,8 @@ const SCHEMA = [
   ] },
   { sec: 'dev', title: 'Appareils', fields: [
     { k: 'shelly_ip', l: 'IP Shelly Pro 3EM', t: 'ip' },
+    { k: 'shelly_mode', l: 'Profil du Shelly', t: 'select', opts: [['auto', 'Automatique'], ['triphase', 'Triphasé (EM)'], ['monophase', 'Monophasé (EM1)']] },
+    { k: 'shelly_channel', l: 'Canal du réseau (monophasé)', t: 'int', min: 0, max: 2, help: 'Canal EM1 qui mesure l\'arrivée du réseau (0 à 2).' },
     { k: 'envoy_ip', l: 'IP Envoy', t: 'ip' },
     { k: 'envoy_fw7', l: 'Envoy firmware ≥ 7 (HTTPS + jeton)', t: 'bool' },
     { k: 'envoy_token', l: 'Jeton Envoy', t: 'secret', area: true, help: 'Jeton propriétaire (~1 an). Vide = conserver l\'actuel.' },
@@ -776,7 +783,485 @@ async function saveConfig(ev) {
   }
 }
 
+// ---------- Graphiques SVG (barres empilées, courbes, survol) ----------
+
+const fmtKwh = (wh) => fr(wh / 1000, Math.abs(wh) < 10000 ? 2 : 1) + ' kWh';
+const fmtEur = (v) => (v < 0 ? '−' : '') + fr(Math.abs(v), 2) + ' €';
+const hhmm = (t) => new Date(t * 1000).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+const dayLabel = (t) => new Date(t * 1000).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric' });
+
+function niceStep(range, n) {
+  const raw = range / n;
+  const p = Math.pow(10, Math.floor(Math.log10(raw)));
+  const f = raw / p;
+  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p;
+}
+
+// Hachures : second codage de la batterie (rouge clair) et de l'export (blanc), voir légende.
+function hatchDefs(root) {
+  const defs = svg('defs', {}, root);
+  for (const [id, color] of [['h-batt', 'var(--red-soft)'], ['h-exp', 'var(--white)']]) {
+    const p = svg('pattern', { id, width: 5, height: 5, patternUnits: 'userSpaceOnUse', patternTransform: 'rotate(45)' }, defs);
+    svg('rect', { width: 5, height: 5, fill: 'var(--surface)' }, p);
+    svg('line', { x1: 0, y1: 0, x2: 0, y2: 5, stroke: color, 'stroke-width': 2.4 }, p);
+  }
+}
+
+function legend(el, items) {
+  el.replaceChildren();
+  for (const it of items) {
+    const span = document.createElement('span');
+    const sw = document.createElement('i');
+    sw.className = 'sw' + (it.hatch ? ' hatch' : '') + (it.line ? ' line' : '') + (it.dash ? ' dash' : '');
+    sw.style.setProperty('--c', it.color);
+    span.append(sw, it.name);
+    el.append(span);
+  }
+}
+
+const tip = () => $('#tip');
+
+function showTip(ev, html) {
+  const t = tip();
+  t.replaceChildren(...html);
+  t.hidden = false;
+  const r = t.getBoundingClientRect();
+  let x = ev.clientX + 14;
+  if (x + r.width > window.innerWidth - 8) x = ev.clientX - r.width - 14;
+  t.style.left = Math.max(8, x) + 'px';
+  t.style.top = Math.max(8, ev.clientY - r.height - 12) + 'px';
+}
+
+function tipRow(color, name, value, hatch) {
+  const d = document.createElement('div');
+  const sw = document.createElement('i');
+  sw.className = 'sw' + (hatch ? ' hatch' : '');
+  sw.style.setProperty('--c', color);
+  const n = document.createElement('span');
+  n.textContent = name;
+  const v = document.createElement('b');
+  v.textContent = value;
+  d.append(sw, n, v);
+  return d;
+}
+
+/* cfg : { t[], step (s), bars:[{name, vals[], color, fill, hatch, neg}], lines:[{name, vals[], color, dash}],
+ *         fmt(v), xMode:'hour'|'day', yMin, yMax, height } */
+function drawChart(box, cfg) {
+  const W = Math.max(280, Math.round(box.clientWidth || 600));
+  const H = cfg.height || 210;
+  const m = { l: 46, r: 8, t: 10, b: 22 };
+  const pw = W - m.l - m.r;
+  const ph = H - m.t - m.b;
+  const n = cfg.t.length;
+  const bars = cfg.bars || [];
+  const lines = cfg.lines || [];
+
+  let hi = cfg.yMax ?? 0;
+  let lo = cfg.yMin ?? 0;
+  for (let i = 0; i < n; i++) {
+    let pos = 0, neg = 0;
+    for (const b of bars) {
+      const v = b.vals[i];
+      if (v == null) continue;
+      if (b.neg) neg -= v; else pos += v;
+    }
+    hi = Math.max(hi, pos);
+    lo = Math.min(lo, neg);
+    for (const l of lines) {
+      const v = l.vals[i];
+      if (v != null) { hi = Math.max(hi, v); lo = Math.min(lo, v); }
+    }
+  }
+  if (hi - lo < 1) hi = lo + 1;
+  const step = niceStep(hi - lo, 4);
+  hi = Math.ceil(hi / step) * step;
+  lo = Math.floor(lo / step) * step;
+  const y = (v) => m.t + ((hi - v) / (hi - lo)) * ph;
+  const bw = pw / Math.max(1, n);
+  const x = (i) => m.l + i * bw;
+
+  const root = document.createElementNS(SVG_NS, 'svg');
+  root.setAttribute('width', W);
+  root.setAttribute('height', H);
+  root.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  root.setAttribute('aria-hidden', 'true');
+  hatchDefs(root);
+
+  for (let v = lo; v <= hi + step / 2; v += step) {
+    svg('line', { x1: m.l, x2: W - m.r, y1: y(v), y2: y(v), class: v === 0 ? 'axis0' : 'grid' }, root);
+    const t = svg('text', { x: m.l - 6, y: y(v) + 4, class: 'tick', 'text-anchor': 'end' }, root);
+    t.textContent = cfg.fmt(v, true);
+  }
+  // Graduations horaires (toutes les 3 h) ou journalières.
+  for (let i = 0; i < n; i++) {
+    const d = new Date(cfg.t[i] * 1000);
+    const mark = cfg.xMode === 'day' ? d.getHours() === 0 && d.getMinutes() === 0
+                                     : d.getMinutes() === 0 && d.getHours() % 3 === 0;
+    if (!mark) continue;
+    svg('line', { x1: x(i), x2: x(i), y1: m.t, y2: H - m.b, class: 'grid' }, root);
+    const t = svg('text', { x: x(i) + 2, y: H - 6, class: 'tick' }, root);
+    t.textContent = cfg.xMode === 'day' ? dayLabel(cfg.t[i]) : d.getHours() + ' h';
+  }
+
+  const gap = bw > 3 ? 1 : 0;
+  for (let i = 0; i < n; i++) {
+    let up = 0, down = 0;
+    for (const b of bars) {
+      const v = b.vals[i];
+      if (v == null || v <= 0) continue;
+      const from = b.neg ? down : up;
+      const to = b.neg ? down - v : up + v;
+      if (b.neg) down = to; else up = to;
+      const top = Math.min(y(from), y(to));
+      svg('rect', {
+        x: x(i) + gap / 2, y: top, width: Math.max(0.6, bw - gap), height: Math.max(0.5, Math.abs(y(from) - y(to))),
+        fill: b.hatch ? `url(#${b.hatch})` : b.color, 'fill-opacity': b.opacity ?? 1,
+      }, root);
+    }
+  }
+  for (const l of lines) {
+    let d = '';
+    let pen = false;
+    for (let i = 0; i < n; i++) {
+      const v = l.vals[i];
+      if (v == null) { pen = false; continue; }
+      d += `${pen ? 'L' : 'M'}${(x(i) + bw / 2).toFixed(1)},${y(v).toFixed(1)}`;
+      pen = true;
+    }
+    const p = svg('path', { d, class: 'cline', stroke: l.color }, root);
+    if (l.dash) p.setAttribute('stroke-dasharray', '5 4');
+  }
+
+  // Survol : ligne de repère et infobulle (cible = toute la zone du graphique).
+  const cross = svg('line', { y1: m.t, y2: H - m.b, class: 'cross', visibility: 'hidden' }, root);
+  const hit = svg('rect', { x: m.l, y: m.t, width: pw, height: ph, fill: 'transparent' }, root);
+  const move = (ev) => {
+    const r = root.getBoundingClientRect();
+    const i = Math.floor((ev.clientX - r.left - m.l) / bw);
+    if (i < 0 || i >= n) return;
+    cross.setAttribute('x1', x(i) + bw / 2);
+    cross.setAttribute('x2', x(i) + bw / 2);
+    cross.setAttribute('visibility', 'visible');
+    const head = document.createElement('div');
+    head.className = 'tip-head';
+    head.textContent = (cfg.xMode === 'day' ? dayLabel(cfg.t[i]) + ' ' : '') + hhmm(cfg.t[i]);
+    const rows = [head];
+    for (const b of bars) {
+      const v = b.vals[i];
+      rows.push(tipRow(b.color, b.name, v == null ? '—' : cfg.fmt(b.neg ? -v : v), !!b.hatch));
+    }
+    for (const l of lines) rows.push(tipRow(l.color, l.name, l.vals[i] == null ? '—' : cfg.fmt(l.vals[i])));
+    showTip(ev, rows);
+  };
+  hit.addEventListener('pointermove', move);
+  hit.addEventListener('pointerdown', move);
+  hit.addEventListener('pointerleave', () => { cross.setAttribute('visibility', 'hidden'); tip().hidden = true; });
+
+  box.replaceChildren(root);
+}
+
+const fmtWaxis = (v, axis) => (axis && Math.abs(v) >= 1000 ? fr(v / 1000, 1) + ' k' : Math.round(v) + (axis ? '' : ' W'));
+
+function segment(groupSel, attr, onChange) {
+  const btns = document.querySelectorAll(`${groupSel} button`);
+  btns.forEach((b) => b.addEventListener('click', () => {
+    btns.forEach((o) => o.setAttribute('aria-pressed', o === b ? 'true' : 'false'));
+    onChange(b.dataset[attr]);
+  }));
+}
+
+// ---------- Accueil : jauge, gains, tarif, diagramme en kWh ----------
+
+let unit = 'w';
+let gaugePeriod = 'day';
+const statsCache = {};
+
+async function loadStats(period) {
+  statsCache[period] = await getJson('/api/stats?period=' + period);
+  return statsCache[period];
+}
+
+function drawGauge(v, sub) {
+  const g = $('#gauge');
+  g.replaceChildren();
+  const arc = 'M20,100 A80,80 0 0 1 180,100';
+  svg('path', { d: arc, class: 'gauge-bg' }, g);
+  const len = Math.PI * 80;
+  const color = v == null ? 'var(--line)' : v < 0.5 ? 'var(--red)' : v <= 0.8 ? 'var(--red-soft)' : 'var(--white)';
+  svg('path', { d: arc, class: 'gauge-val', stroke: color, 'stroke-dasharray': `${(v || 0) * len} ${len}` }, g);
+  const t = svg('text', { x: 100, y: 94, class: 'gauge-num' }, g);
+  t.textContent = v == null ? '—' : Math.round(v * 100) + ' %';
+  $('#gauge-label').textContent = sub;
+}
+
+function renderGauge(st) {
+  const p = st.autoprod;
+  const sub = st.kwh.pv > 0 ? `Autoproduction ${p == null ? '—' : Math.round(p * 100) + ' %'} · PV ${fmtKwh(st.kwh.pv * 1000)}`
+                            : 'Pas encore de production mesurée sur la période';
+  drawGauge(st.autoconso, sub);
+}
+
+function renderGains(day, month) {
+  const row = (label, st) => {
+    if (!st) return [label, '—'];
+    const g = st.gain;
+    return [label, `${fmtEur(g.total)} (batterie ${fmtEur(g.batt_net)}, chauffe-eau ${fmtEur(g.ce)})`];
+  };
+  fillDl('gains', [row('Aujourd\'hui', day), row('30 jours', month)]);
+
+  const roi = (day || month || {}).roi;
+  if (!roi) return;
+  const bar = $('#roi-bar span');
+  const pct = roi.price > 0 ? Math.max(0, Math.min(1, roi.cum_net / roi.price)) : 0;
+  bar.style.width = (pct * 100).toFixed(1) + '%';
+  $('#roi-bar').setAttribute('aria-valuenow', Math.round(pct * 100));
+  $('#roi-pct').textContent = roi.price > 0 ? `${fmtEur(roi.cum_net)} / ${fmtEur(roi.price)}` : '';
+  let txt;
+  if (!(roi.price > 0)) txt = 'Prix de la batterie à saisir dans les Paramètres.';
+  else if (roi.payback_years == null) txt = 'Pas encore de gain projeté.';
+  else {
+    const c = roi.commissioning ? new Date(roi.commissioning) : null;
+    const y0 = c ? c.getFullYear() + c.getMonth() / 12 : null;
+    // Année de rentabilité si la mise en service est connue, sinon durée.
+    const when = (yrs) => (y0 == null ? `${Math.round(yrs)} ans` : `${Math.round(y0 + yrs)}`);
+    txt = y0 == null ? `Batterie rentabilisée dans ~${when(roi.payback_years)}`
+                     : `Batterie rentabilisée en ~${when(roi.payback_years)}`;
+    if (roi.estimate) {
+      txt += ` — estimation (${roi.months_observed} mois observé${roi.months_observed > 1 ? 's' : ''}, ` +
+             `fourchette ${when(roi.payback_years * (1 - roi.spread))} à ${when(roi.payback_years * (1 + roi.spread))})`;
+    }
+    txt += ` · ${fmtEur(roi.annual)}/an projetés.`;
+  }
+  $('#roi-txt').textContent = txt;
+}
+
+function renderTariff(t) {
+  const el = $('#tariff');
+  if (!t || !t.configured) { el.textContent = 'Tarif non saisi (Paramètres → Tarif).'; return; }
+  if (t.price === undefined) { el.textContent = 'En attente de l\'heure (NTP).'; return; }
+  const name = !t.hphc ? 'Tarif base' : t.hc ? 'Heures creuses' : 'Heures pleines';
+  let txt = `${name} · ${fr(t.price, 4)} €/kWh`;
+  if (t.next_min) {
+    const h = Math.floor(t.next_min / 60), mn = t.next_min % 60;
+    txt += ` · ${t.next_hc ? 'HC' : 'HP'} dans ${h ? h + ' h ' : ''}${String(mn).padStart(h ? 2 : 1, '0')} min`;
+  }
+  el.textContent = txt;
+  el.classList.toggle('hc', !!t.hc);
+}
+
+// Diagramme en énergies du jour : mêmes chemins, valeurs de /api/stats.
+function renderFlowsKwh(st) {
+  const k = st.kwh;
+  const wh = {
+    pv_home: k.pv_home, pv_batt: k.pv_batt, pv_grid: k.pv_grid, grid_home: k.grid_home,
+    grid_batt: k.grid_batt, batt_home: k.batt_home, home_ce: k.ce,
+  };
+  for (const [id, el] of Object.entries(flowEls)) {
+    const v = (wh[id] || 0) * 1000;
+    el.w = v > ACTIVE_W ? 60 + Math.sqrt(v) : 0;      // vitesse indicative en mode énergie
+    el.line.style.display = v > ACTIVE_W ? '' : 'none';
+    el.dots.style.display = v > ACTIVE_W ? '' : 'none';
+    el.line.setAttribute('stroke-width', 2 + 4 * Math.sqrt(Math.min(v, 10000) / 10000));
+  }
+  const s = lastState || { pv: {}, batt: {}, ce: {}, grid: {} };
+  setNode('pv', fmtKwh(k.pv * 1000), 'production', s.pv.configured !== false);
+  setNode('grid', '→ ' + fmtKwh(k.import * 1000), '← ' + fmtKwh(k.export * 1000) + ' exportés', true);
+  setNode('batt', '▲ ' + fmtKwh(k.batt_ch * 1000), '▼ ' + fmtKwh(k.batt_dis * 1000), s.batt.configured !== false);
+  setNode('home', fmtKwh(k.home * 1000), '', true);
+  setNode('ce', fmtKwh(k.ce * 1000), k.ce > 0 ? `dont local ${fmtKwh(k.ce_local * 1000)}` : '', s.ce.configured !== false);
+  const parts = [k.pv_home, k.batt_home, k.grid_home];
+  const tot = parts.reduce((a, v) => a + v, 0);
+  let start = 0;
+  nodeEls.ring.forEach((c, i) => {
+    const frac = tot > 0 ? parts[i] / tot : 0;
+    setRing(c, start, frac);
+    start += frac;
+  });
+}
+
+async function refreshHome() {
+  try {
+    const day = await loadStats('day');
+    if (unit === 'kwh') renderFlowsKwh(day);
+    renderGains(day, statsCache['30d']);
+    if (gaugePeriod === 'day') renderGauge(day);
+    else renderGauge(await loadStats(gaugePeriod));
+    renderGains(day, await loadStats('30d'));
+  } catch (e) {
+    $('#gauge-label').textContent = e.status === 503 ? 'En attente de l\'heure (NTP).' : 'Statistiques indisponibles.';
+  }
+}
+
+// ---------- Prévisions ----------
+
+let fcDay = 0;
+
+async function loadForecast() {
+  let fc, hist;
+  try {
+    [fc, hist] = await Promise.all([getJson('/api/forecast'), getJson('/api/history?range=24h').catch(() => null)]);
+  } catch (e) {
+    alertBox('fc-alerts', [[`Prévisions indisponibles : ${e.message}`]]);
+    return;
+  }
+  const al = [];
+  if (!fc.coords) al.push(['Latitude et longitude non renseignées : pas de prévision météo (Paramètres → Installation PV).']);
+  else if (!fc.ok) al.push(['Prévision Open-Meteo pas encore reçue.']);
+  else al.push([`Prévision Open-Meteo reçue à ${hhmm(fc.fetched)}.`, 'info']);
+  alertBox('fc-alerts', al);
+
+  const rows = fc.rows.slice(fcDay * 48, fcDay * 48 + 48);
+  const t = rows.map((r) => r[0]);
+  const W = (wh) => (wh == null ? null : wh * 3600 / fc.slot_s);
+  const actual = {};
+  if (hist && fcDay === 0) for (const r of hist.rows) actual[r[0]] = r;
+  const act = (i, f) => { const r = actual[t[i]]; return r && r[9] >= 80 ? W(f(r)) : null; };
+
+  const pvRaw = rows.map((r) => W(r[3]));
+  const pv = rows.map((r) => W(r[4]));
+  const pvAct = t.map((_, i) => act(i, (r) => r[1]));
+  legend($('#fc-pv-legend'), [
+    { name: 'Mesuré', color: 'var(--white)' },
+    { name: 'Prévu (modèle)', color: 'var(--white)', line: true },
+    { name: 'Repli physique', color: 'var(--text-3)', line: true, dash: true },
+  ]);
+  drawChart($('#fc-pv'), {
+    t, step: fc.slot_s, fmt: fmtWaxis,
+    bars: [{ name: 'Mesuré', vals: pvAct, color: 'var(--white)', opacity: 0.4 }],
+    lines: [{ name: 'Prévu', vals: pv, color: 'var(--white)' }, { name: 'Repli', vals: pvRaw, color: 'var(--text-3)', dash: true }],
+  });
+
+  const baseAct = t.map((_, i) => act(i, (r) => r[2] - r[3]));
+  legend($('#fc-base-legend'), [
+    { name: 'Mesurée', color: 'var(--red-soft)' },
+    { name: 'Prévue (modèle)', color: 'var(--red-soft)', line: true },
+    { name: 'Profil moyen', color: 'var(--text-3)', line: true, dash: true },
+  ]);
+  drawChart($('#fc-base'), {
+    t, step: fc.slot_s, fmt: fmtWaxis,
+    bars: [{ name: 'Mesurée', vals: baseAct, color: 'var(--red-soft)', opacity: 0.45 }],
+    lines: [{ name: 'Prévue', vals: rows.map((r) => W(r[6])), color: 'var(--red-soft)' },
+            { name: 'Profil', vals: rows.map((r) => W(r[5])), color: 'var(--text-3)', dash: true }],
+  });
+
+  const sumKwh = (vals) => vals.reduce((a, v) => a + (v || 0), 0) / 1000 * fc.slot_s / 3600;
+  const quality = (mdl, total) => [
+    ['Total prévu', fr(total, 1) + ' kWh'],
+    ['Écart moyen (7 j)', mdl.mae7 == null ? 'pas encore de mesure' : `${mdl.mae7} Wh par créneau (${mdl.n7} créneaux)`],
+    ['Apprentissage', mdl.ready ? `${mdl.samples} échantillons` : `rodage : ${mdl.samples} / 96 (repli utilisé)`, mdl.ready ? '' : 'dim'],
+  ];
+  fillDl('fc-pv-q', quality(fc.pv, sumKwh(pv)));
+  fillDl('fc-base-q', quality(fc.base, sumKwh(rows.map((r) => W(r[6])))));
+}
+
+// ---------- Historique ----------
+
+let histRange = '24h';
+let histData = null;
+
+function histSeries(h) {
+  // 7 jours : regroupement par heure (2 créneaux) pour rester lisible sur mobile.
+  const k = h.range === '7d' ? 2 : 1;
+  const step = h.slot_s * k;
+  const out = { t: [], step, pv: [], dis: [], imp: [], ch: [], exp: [], soc: [], home: [] };
+  for (let i = 0; i + k <= h.rows.length; i += k) {
+    const grp = h.rows.slice(i, i + k);
+    const sum = (c) => grp.reduce((a, r) => a + r[c], 0) * 3600 / step;
+    out.t.push(grp[0][0]);
+    out.pv.push(sum(1)); out.home.push(sum(2)); out.imp.push(sum(4)); out.exp.push(sum(5));
+    out.ch.push(sum(6)); out.dis.push(sum(7));
+    const soc = grp[grp.length - 1][8];
+    out.soc.push(soc);
+  }
+  return out;
+}
+
+function renderHistory() {
+  const h = histData;
+  if (!h) return;
+  const s = histSeries(h);
+  if (!s.t.length) {
+    $('#hist-chart').textContent = 'Pas encore de créneau enregistré (le premier est clos au bout de 30 min).';
+    $('#hist-totals').textContent = '';
+    $('#soc-card').hidden = true;
+    return;
+  }
+  const bars = [
+    { name: 'Solaire', vals: s.pv, color: 'var(--white)' },
+    { name: 'Batterie (décharge)', vals: s.dis, color: 'var(--red-soft)', hatch: 'h-batt' },
+    { name: 'Réseau (import)', vals: s.imp, color: 'var(--red)' },
+    { name: 'Batterie (charge)', vals: s.ch, color: 'var(--red-soft)', hatch: 'h-batt', neg: true },
+    { name: 'Réseau (export)', vals: s.exp, color: 'var(--white)', hatch: 'h-exp', neg: true },
+  ];
+  legend($('#hist-legend'), bars.map((b) => ({ name: b.name, color: b.color, hatch: !!b.hatch })));
+  drawChart($('#hist-chart'), { t: s.t, step: s.step, bars, fmt: fmtWaxis, xMode: h.range === '7d' ? 'day' : 'hour' });
+
+  const kwh = (vals) => fmtKwh(vals.reduce((a, v) => a + v, 0) * s.step / 3600);
+  $('#hist-totals').textContent = `Production ${kwh(s.pv)} · Maison ${kwh(s.home)} · Import ${kwh(s.imp)} · ` +
+                                  `Export ${kwh(s.exp)} · Batterie ▲ ${kwh(s.ch)} ▼ ${kwh(s.dis)}`;
+
+  const hasSoc = s.soc.some((v) => v != null);
+  $('#soc-card').hidden = !hasSoc;
+  if (hasSoc) {
+    drawChart($('#soc-chart'), {
+      t: s.t, step: s.step, height: 130, yMin: 0, yMax: 100, xMode: h.range === '7d' ? 'day' : 'hour',
+      fmt: (v) => Math.round(v) + (v === 100 || v === 0 ? '' : '') + ' %',
+      lines: [{ name: 'SOC', vals: s.soc, color: 'var(--red-soft)' }],
+    });
+  }
+  if ($('#hist-table').open) buildHistTable();
+}
+
+function buildHistTable() {
+  const h = histData;
+  const wrap = $('#hist-table .table-wrap');
+  if (!h) return;
+  const table = document.createElement('table');
+  const head = ['Créneau', 'Solaire (Wh)', 'Maison (Wh)', 'Chauffe-eau (Wh)', 'Import (Wh)', 'Export (Wh)',
+                'Charge (Wh)', 'Décharge (Wh)', 'SOC (%)', 'Couverture (%)'];
+  const tr = document.createElement('tr');
+  for (const c of head) { const th = document.createElement('th'); th.textContent = c; tr.append(th); }
+  table.append(tr);
+  for (const r of h.rows.slice().reverse()) {
+    const row = document.createElement('tr');
+    const cells = [`${dayLabel(r[0])} ${hhmm(r[0])}`, ...r.slice(1, 8).map((v) => Math.round(v)), r[8] ?? '—', r[9]];
+    for (const c of cells) { const td = document.createElement('td'); td.textContent = c; row.append(td); }
+    table.append(row);
+  }
+  wrap.replaceChildren(table);
+}
+
+async function loadHistory() {
+  try {
+    histData = await getJson('/api/history?range=' + histRange);
+    renderHistory();
+  } catch (e) {
+    $('#hist-chart').textContent = e.status === 503 ? 'En attente de l\'heure (NTP).' : `Historique indisponible : ${e.message}`;
+  }
+}
+
 // ---------- Démarrage ----------
+
+segment('.flow-card .seg', 'unit', (u) => {
+  unit = u;
+  if (u === 'kwh' && statsCache.day) renderFlowsKwh(statsCache.day);
+  else if (u === 'w' && lastState) renderFlows(lastState);
+  refreshHome();
+});
+segment('#gauge-period', 'p', (p) => { gaugePeriod = p; refreshHome(); });
+segment('#fc-day', 'd', (d) => { fcDay = Number(d); loadForecast(); });
+segment('#hist-range', 'r', (r) => { histRange = r; loadHistory(); });
+$('#hist-table').addEventListener('toggle', () => { if ($('#hist-table').open) buildHistTable(); });
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    const page = location.hash.slice(1);
+    if (page === 'previsions') loadForecast();
+    if (page === 'historique') renderHistory();
+  }, 250);
+});
 
 buildDiagram();
 buildForm();
@@ -785,4 +1270,6 @@ showPage();
 pollState();
 connectWs();
 pollSystem();
+refreshHome();
 setInterval(() => { if (!document.hidden) pollSystem(); }, SYSTEM_POLL_MS);
+setInterval(() => { if (!document.hidden) refreshHome(); }, 60000);

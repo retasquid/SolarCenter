@@ -26,6 +26,10 @@
     <div id="flow-alerts" class="alerts" aria-live="polite"></div>
     <div class="home-grid">
       <article class="card flow-card">
+        <div class="seg" role="group" aria-label="Unité du diagramme">
+          <button type="button" data-unit="w" aria-pressed="true">Instantané (W)</button>
+          <button type="button" data-unit="kwh" aria-pressed="false">Aujourd'hui (kWh)</button>
+        </div>
         <svg id="flow" viewBox="0 -14 400 460" role="img" aria-labelledby="flow-title">
           <title id="flow-title">Flux d'énergie en direct</title>
         </svg>
@@ -38,17 +42,76 @@
         <p class="hint">Touchez un élément pour voir ses 2 dernières heures (depuis l'ouverture de la page).</p>
       </article>
       <div class="side">
-        <article class="card"><h2>Autoconsommation</h2><p class="empty">Jauge : arrive au jalon M2.</p></article>
-        <article class="card"><h2>Gains et rentabilité</h2><p class="empty">Arrive au jalon M2.</p></article>
+        <article class="card">
+          <h2>Autoconsommation</h2>
+          <div class="seg small" id="gauge-period" role="group" aria-label="Période">
+            <button type="button" data-p="day" aria-pressed="true">Aujourd'hui</button>
+            <button type="button" data-p="7d" aria-pressed="false">7 j</button>
+            <button type="button" data-p="30d" aria-pressed="false">30 j</button>
+            <button type="button" data-p="year" aria-pressed="false">Année</button>
+          </div>
+          <svg id="gauge" viewBox="0 0 200 118" role="img" aria-labelledby="gauge-label"></svg>
+          <p class="gauge-sub" id="gauge-label">—</p>
+        </article>
+        <article class="card">
+          <h2>Gains et rentabilité</h2>
+          <dl id="gains"></dl>
+          <div class="roi">
+            <div class="roi-head"><span>Batterie</span><span id="roi-pct"></span></div>
+            <div class="bar" role="progressbar" aria-labelledby="roi-txt" id="roi-bar"><span></span></div>
+            <p id="roi-txt" class="roi-txt">—</p>
+          </div>
+        </article>
+        <article class="card">
+          <h2>Tarif en cours</h2>
+          <p id="tariff" class="tariff">—</p>
+        </article>
       </div>
     </div>
   </section>
 
   <section id="previsions" class="page">
-    <div class="card empty">Prévisions PV et consommation : arrivent au jalon M2.</div>
+    <div id="fc-alerts" class="alerts" aria-live="polite"></div>
+    <div class="seg" id="fc-day" role="group" aria-label="Jour">
+      <button type="button" data-d="0" aria-pressed="true">Aujourd'hui</button>
+      <button type="button" data-d="1" aria-pressed="false">Demain</button>
+    </div>
+    <div class="grid two">
+      <article class="card chart-card">
+        <h2>Production solaire</h2>
+        <div class="legend" id="fc-pv-legend"></div>
+        <div class="chart" id="fc-pv"></div>
+        <dl id="fc-pv-q" class="q"></dl>
+      </article>
+      <article class="card chart-card">
+        <h2>Consommation de base (hors chauffe-eau)</h2>
+        <div class="legend" id="fc-base-legend"></div>
+        <div class="chart" id="fc-base"></div>
+        <dl id="fc-base-q" class="q"></dl>
+      </article>
+    </div>
   </section>
+
   <section id="historique" class="page">
-    <div class="card empty">Historique 24 h / 7 jours : arrive au jalon M2.</div>
+    <div class="seg" id="hist-range" role="group" aria-label="Période">
+      <button type="button" data-r="24h" aria-pressed="true">24 h</button>
+      <button type="button" data-r="7d" aria-pressed="false">7 jours</button>
+    </div>
+    <article class="card chart-card">
+      <h2>Bilan énergétique</h2>
+      <p class="hint">Au-dessus de 0 : d'où vient l'énergie. En dessous : où part ce qui n'est pas consommé.</p>
+      <div class="legend" id="hist-legend"></div>
+      <div class="chart" id="hist-chart"></div>
+      <p class="totals" id="hist-totals"></p>
+    </article>
+    <article class="card chart-card" id="soc-card">
+      <h2>Charge de la batterie (SOC)</h2>
+      <div class="chart small" id="soc-chart"></div>
+    </article>
+    <details class="card table-card" id="hist-table">
+      <summary>Voir les données en tableau</summary>
+      <div class="table-wrap"></div>
+    </details>
   </section>
 
   <section id="parametres" class="page">
@@ -80,6 +143,7 @@
   </section>
 </main>
 
+<div id="tip" class="tip" hidden></div>
 <script src="app.js"></script>
 </body>
 </html>

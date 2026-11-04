@@ -134,6 +134,86 @@ dd.dim { color: var(--text-3); }
 .spark-zero { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .link { background: none; border: 0; color: var(--text-2); font: inherit; cursor: pointer; padding: 0 4px; }
 
+/* ---------- Commandes segmentées ---------- */
+
+.seg { display: inline-flex; gap: 2px; padding: 2px; margin-bottom: 10px; background: var(--surface-2); border-radius: 8px; }
+.seg button {
+  padding: 7px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.seg button[aria-pressed="true"] { background: var(--line); color: var(--white); }
+.seg.small button { padding: 5px 9px; font-size: 12px; }
+.flow-card .seg { margin: 6px 6px 0; }
+
+/* ---------- Jauge, gains, tarif ---------- */
+
+#gauge { display: block; width: 100%; max-width: 260px; margin: 4px auto 0; }
+.gauge-bg, .gauge-val { fill: none; stroke-width: 14; stroke-linecap: butt; }
+.gauge-bg { stroke: var(--line); }
+.gauge-num { fill: var(--white); font-size: 32px; font-weight: 600; text-anchor: middle; }
+.gauge-sub { margin: 2px 0 0; text-align: center; color: var(--text-2); font-size: 13px; }
+
+#gains dd { font-size: 14px; }
+.roi { margin-top: 12px; }
+.roi-head { display: flex; justify-content: space-between; font-size: 13px; color: var(--text-2); margin-bottom: 6px; }
+.bar { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
+.bar span { display: block; height: 100%; width: 0; background: var(--red-soft); border-radius: 4px; }
+.roi-txt { margin: 8px 0 0; font-size: 13px; color: var(--text-2); }
+.tariff { margin: 0; font-size: 15px; }
+.tariff.hc { color: var(--white); }
+
+/* ---------- Graphiques ---------- */
+
+.grid.two { grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 900px) { .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.chart-card { margin-bottom: 12px; }
+.chart { width: 100%; min-height: 120px; color: var(--text-3); font-size: 13px; }
+.chart svg { display: block; touch-action: pan-y; }
+.chart .grid { stroke: var(--line); stroke-width: 1; }
+.chart .axis0 { stroke: var(--text-3); stroke-width: 1; }
+.chart .tick { fill: var(--text-3); font-size: 11px; font-variant-numeric: tabular-nums; }
+.chart .cline { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.chart .cross { stroke: var(--text-2); stroke-width: 1; stroke-dasharray: 3 3; pointer-events: none; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-bottom: 8px; font-size: 12px; color: var(--text-2); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; background: var(--c); flex: none; }
+.sw.hatch { background: repeating-linear-gradient(45deg, var(--c) 0 2px, var(--surface) 2px 4px); outline: 1px solid var(--c); outline-offset: -1px; }
+.sw.line { height: 2px; border-radius: 1px; width: 16px; }
+.sw.dash { background: repeating-linear-gradient(90deg, var(--c) 0 4px, transparent 4px 7px); }
+
+.tip {
+  position: fixed;
+  z-index: 10;
+  min-width: 170px;
+  padding: 8px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 12px;
+  pointer-events: none;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .5);
+}
+.tip div { display: flex; align-items: center; gap: 6px; margin-top: 3px; color: var(--text-2); }
+.tip b { margin-left: auto; padding-left: 12px; color: var(--white); font-weight: 600; font-variant-numeric: tabular-nums; }
+.tip-head { color: var(--white) !important; font-weight: 600; margin: 0 0 4px !important; }
+
+.q { margin-top: 10px; font-size: 13px; }
+.totals { margin: 8px 0 0; font-size: 13px; color: var(--text-2); }
+
+.table-card summary { cursor: pointer; color: var(--text-2); }
+.table-wrap { overflow-x: auto; margin-top: 10px; max-height: 420px; overflow-y: auto; }
+table { border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+th, td { padding: 5px 8px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--line); }
+th { position: sticky; top: 0; background: var(--surface); color: var(--text-2); font-weight: 600; }
+td:first-child, th:first-child { text-align: left; }
+
 /* ---------- Paramètres ---------- */
 
 fieldset.card { margin: 0; min-width: 0; }

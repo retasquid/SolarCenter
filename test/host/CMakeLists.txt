@@ -45,6 +45,11 @@ foreach(t flows tariff rls stats models planner regulator)
     add_test(NAME ${t} COMMAND test_${t})
 endforeach()
 
+add_executable(test_tuya test_tuya.c "${COMP}/drv_tuya/tuya_proto.c")
+target_include_directories(test_tuya PRIVATE "${COMP}/drv_tuya/include" "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(test_tuya unity)
+add_test(NAME tuya COMMAND test_tuya)
+
 add_executable(test_jwt test_jwt.c "${COMP}/drv_envoy/jwt_exp.c")
 target_include_directories(test_jwt PRIVATE "${COMP}/drv_envoy/include")
 target_link_libraries(test_jwt unity)

@@ -29,15 +29,19 @@ if(UNIX)
 endif()
 add_test(NAME config COMMAND test_config)
 
-add_executable(test_flows test_flows.c
-               "${COMP}/algo/flows.c"
-               "${COMP}/algo/sanity.c")
-target_include_directories(test_flows PRIVATE "${COMP}/algo/include")
-target_link_libraries(test_flows unity)
+# Tout algo/ en une bibliothèque : la règle d'or (C pur) est vérifiée à la compilation sur PC.
+file(GLOB ALGO_SRCS "${COMP}/algo/*.c")
+add_library(algo STATIC ${ALGO_SRCS})
+target_include_directories(algo PUBLIC "${COMP}/algo/include")
 if(UNIX)
-    target_link_libraries(test_flows m)
+    target_link_libraries(algo PUBLIC m)
 endif()
-add_test(NAME flows COMMAND test_flows)
+
+foreach(t flows tariff rls stats)
+    add_executable(test_${t} test_${t}.c)
+    target_link_libraries(test_${t} algo unity)
+    add_test(NAME ${t} COMMAND test_${t})
+endforeach()
 
 add_executable(test_jwt test_jwt.c "${COMP}/drv_envoy/jwt_exp.c")
 target_include_directories(test_jwt PRIVATE "${COMP}/drv_envoy/include")

@@ -18,6 +18,9 @@ static StaticSemaphore_t s_tls_mutex_buf;
 
 esp_err_t http_util_init(void)
 {
+    /* Nos pilotes journalisent le premier échec d'une série : inutile de répéter chaque délai dépassé. */
+    esp_log_level_set("HTTP_CLIENT", ESP_LOG_ERROR);
+    esp_log_level_set("esp-tls", ESP_LOG_ERROR);
     g_tls_mutex = xSemaphoreCreateMutexStatic(&s_tls_mutex_buf);
     return g_tls_mutex != NULL ? ESP_OK : ESP_FAIL;
 }

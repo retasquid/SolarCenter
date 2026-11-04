@@ -61,6 +61,8 @@ static esp_err_t system_get(httpd_req_t *req)
     cJSON_AddBoolToObject(r, "ap_active", st.ap_active);
     cJSON_AddBoolToObject(r, "setup_mode", net_is_setup_mode());
     cJSON_AddNumberToObject(r, "rssi", st.rssi);
+    cJSON_AddNumberToObject(r, "wifi_disconnects", st.wifi_disconnects);
+    cJSON_AddNumberToObject(r, "wifi_last_reason", st.wifi_last_reason);
     cJSON_AddStringToObject(r, "ip", st.ip);
 
     char rev[8];

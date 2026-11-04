@@ -59,6 +59,8 @@ typedef struct {
     bool   ap_active;           /* portail SoftAP ouvert (premier démarrage ou secours) */
     int8_t rssi;
     char   ip[16];
+    uint32_t wifi_disconnects;  /* depuis le démarrage */
+    uint8_t  wifi_last_reason;  /* wifi_err_reason_t de la dernière déconnexion */
 
     /* Heure */
     bool    time_synced;        /* au moins une synchro NTP depuis le démarrage */

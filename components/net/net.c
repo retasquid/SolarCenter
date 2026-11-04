@@ -127,6 +127,8 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
         st->wifi_connected = false;
         st->ip[0] = '\0';
         st->rssi = 0;
+        st->wifi_disconnects++;
+        st->wifi_last_reason = (uint8_t)ev->reason;
         app_state_unlock();
         ESP_LOGW(TAG, "WiFi déconnecté (raison %d), nouvel essai dans %lu ms",
                  ev->reason, (unsigned long)s_retry_ms);
@@ -232,10 +234,21 @@ esp_err_t net_start(const cfg_t *cfg)
         sta_cfg.sta.threshold.authmode = cfg->sys.wifi_pass[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
         ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "mode STA");
         ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &sta_cfg), TAG, "config STA");
+        /* 20 MHz : plus robuste que 40 MHz dans une bande 2,4 GHz encombrée. */
+        esp_err_t bw_err = esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW20);
+        if (bw_err != ESP_OK) {
+            ESP_LOGW(TAG, "largeur de canal : %s", esp_err_to_name(bw_err));
+        }
         ESP_LOGI(TAG, "connexion à « %s »", cfg->sys.wifi_ssid);
     }
 
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "esp_wifi_start");
+    /* Alimenté sur secteur : pas d'économie d'énergie radio, qui ajoute latence et pertes
+     * (constaté avec un signal faible). */
+    esp_err_t ps_err = esp_wifi_set_ps(WIFI_PS_NONE);
+    if (ps_err != ESP_OK) {
+        ESP_LOGW(TAG, "économie d'énergie WiFi : %s", esp_err_to_name(ps_err));
+    }
     mdns_start(cfg->sys.hostname);
     return ESP_OK;
 }

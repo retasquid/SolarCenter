@@ -235,9 +235,19 @@ static const char *validate_sys(const cfg_sys_t *s)
     return NULL;
 }
 
+static const char *validate_shelly(const cfg_shelly_t *s)
+{
+    TRY(s->mode <= SHELLY_MODE_MONOPHASE, "dev.shelly_mode");
+    TRY(s->channel <= 2, "dev.shelly_channel");
+    return NULL;
+}
+
 const char *cfg_validate(const cfg_t *c)
 {
     const char *bad;
+    if ((bad = validate_shelly(&c->shelly)) != NULL) {
+        return bad;
+    }
     if ((bad = validate_tariff(&c->tariff)) != NULL) {
         return bad;
     }

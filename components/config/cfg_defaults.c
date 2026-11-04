@@ -51,6 +51,9 @@ void cfg_set_defaults(cfg_t *c)
     c->dev.envoy_fw7 = true;
     c->dev.envoy_skip_cert = true;
 
+    c->shelly.mode = SHELLY_MODE_AUTO;
+    c->shelly.channel = 0;
+
     c->sys.poll_ms = 2000;
     c->sys.observer = true;         /* aucune commande tant que l'utilisateur ne l'a pas décidé */
     strcpy(c->sys.hostname, "solaire");

@@ -5,7 +5,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define CFG_VERSION         1
+#define CFG_VERSION         2
+#define CFG_V1_SIZE         1104    /* taille de cfg_t en v1 : les champs v2 sont ajoutés après */
 
 #define CFG_HC_SLOTS_MAX    4
 #define CFG_IP_LEN          16      /* "255.255.255.255" + NUL */
@@ -97,6 +98,18 @@ typedef struct {
     char     wifi_pass[CFG_WIFI_PASS_LEN];
 } cfg_sys_t;
 
+typedef enum {
+    SHELLY_MODE_AUTO = 0,       /* EM (triphasé), sinon EM1 si l'appareil répond 404 */
+    SHELLY_MODE_TRIPHASE = 1,   /* EM.GetStatus */
+    SHELLY_MODE_MONOPHASE = 2,  /* EM1.GetStatus sur un canal (profil « monophase » du Pro 3EM) */
+} shelly_mode_t;
+
+/* v2. Uniquement des uint8_t : alignement 1, la structure suit la fin de cfg_t v1 sans décalage. */
+typedef struct {
+    uint8_t mode;               /* shelly_mode_t */
+    uint8_t channel;            /* canal EM1 du compteur réseau en monophasé (0–2) */
+} cfg_shelly_t;
+
 typedef struct {
     cfg_tariff_t tariff;
     cfg_pv_t     pv;
@@ -105,6 +118,8 @@ typedef struct {
     cfg_roi_t    roi;
     cfg_dev_t    dev;
     cfg_sys_t    sys;
+    /* ---- v2 : ajouts en fin de structure uniquement (migration par recopie du préfixe v1) ---- */
+    cfg_shelly_t shelly;
 } cfg_t;
 
 void cfg_set_defaults(cfg_t *c);

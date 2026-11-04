@@ -1,4 +1,5 @@
 #include <math.h>
+#include <stddef.h>
 #include <string.h>
 #include "unity.h"
 #include "cfg_types.h"
@@ -167,6 +168,24 @@ static void test_passwords(void)
     TEST_ASSERT_EQUAL_STRING("sys.wifi_pass", cfg_validate(&c));
 }
 
+/* Migration v1 → v2 : les champs v2 commencent exactement à la fin de cfg_t v1. */
+static void test_v2_fields_follow_v1_layout(void)
+{
+    TEST_ASSERT_EQUAL_UINT(CFG_V1_SIZE, offsetof(cfg_t, shelly));
+}
+
+static void test_shelly_mode_and_channel(void)
+{
+    TEST_ASSERT_EQUAL_UINT8(SHELLY_MODE_AUTO, c.shelly.mode);
+    c.shelly.mode = 3;
+    TEST_ASSERT_EQUAL_STRING("dev.shelly_mode", cfg_validate(&c));
+    c.shelly.mode = SHELLY_MODE_MONOPHASE;
+    c.shelly.channel = 3;
+    TEST_ASSERT_EQUAL_STRING("dev.shelly_channel", cfg_validate(&c));
+    c.shelly.channel = 2;
+    TEST_ASSERT_NULL(cfg_validate(&c));
+}
+
 static void test_hostname(void)
 {
     strcpy(c.sys.hostname, "Solaire");
@@ -199,5 +218,7 @@ int main(void)
     RUN_TEST(test_token_charset);
     RUN_TEST(test_passwords);
     RUN_TEST(test_hostname);
+    RUN_TEST(test_v2_fields_follow_v1_layout);
+    RUN_TEST(test_shelly_mode_and_channel);
     return UNITY_END();
 }

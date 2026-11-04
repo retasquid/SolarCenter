@@ -1,3 +1,4 @@
+#include <stddef.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -26,9 +27,35 @@ static cfg_status_t s_status;
 static StaticSemaphore_t s_mtx_buf;
 static SemaphoreHandle_t s_mtx;
 
-static uint32_t blob_crc(const cfg_blob_t *b)
+#define BLOB_HDR_SIZE offsetof(cfg_blob_t, cfg)
+
+_Static_assert(offsetof(cfg_t, shelly) == CFG_V1_SIZE, "les champs v2 doivent suivre cfg_t v1");
+
+static uint32_t blob_crc(const cfg_blob_t *b, size_t size)
 {
-    return esp_rom_crc32_le(0, (const uint8_t *)&b->cfg, sizeof(b->cfg));
+    return esp_rom_crc32_le(0, (const uint8_t *)&b->cfg, size);
+}
+
+/* v1 → v2 : préfixe v1 recopié, champs ajoutés à leurs valeurs par défaut. */
+static cfg_status_t migrate_v1(size_t len)
+{
+    if (s_blob.size != CFG_V1_SIZE || len != BLOB_HDR_SIZE + CFG_V1_SIZE) {
+        return CFG_STATUS_RESET_VERSION;
+    }
+    if (blob_crc(&s_blob, CFG_V1_SIZE) != s_blob.crc) {
+        return CFG_STATUS_RESET_CRC;
+    }
+    static cfg_t tmp;
+    cfg_set_defaults(&tmp);
+    memcpy(&tmp, &s_blob.cfg, CFG_V1_SIZE);
+    const char *bad = cfg_validate(&tmp);
+    if (bad != NULL) {
+        ESP_LOGE(TAG, "config v1 invalide après migration (%s)", bad);
+        return CFG_STATUS_RESET_INVALID;
+    }
+    memcpy(&s_cfg, &tmp, sizeof(s_cfg));
+    ESP_LOGW(TAG, "config migrée de v1 vers v%d", CFG_VERSION);
+    return CFG_STATUS_MIGRATED;
 }
 
 static cfg_status_t load(void)
@@ -57,11 +84,13 @@ static cfg_status_t load(void)
         ESP_LOGE(TAG, "nvs_get_blob : %s", esp_err_to_name(err));
         return CFG_STATUS_RESET_READ;
     }
-    /* Version 1 : aucune migration possible pour l'instant. */
+    if (len >= BLOB_HDR_SIZE && s_blob.version == 1) {
+        return migrate_v1(len);
+    }
     if (len != sizeof(s_blob) || s_blob.version != CFG_VERSION || s_blob.size != sizeof(cfg_t)) {
         return CFG_STATUS_RESET_VERSION;
     }
-    if (blob_crc(&s_blob) != s_blob.crc) {
+    if (blob_crc(&s_blob, sizeof(s_blob.cfg)) != s_blob.crc) {
         return CFG_STATUS_RESET_CRC;
     }
     const char *bad = cfg_validate(&s_blob.cfg);
@@ -81,7 +110,14 @@ esp_err_t config_init(void)
     }
     cfg_set_defaults(&s_cfg);
     s_status = load();
-    if (s_status == CFG_STATUS_OK) {
+    if (s_status == CFG_STATUS_MIGRATED) {
+        /* Réécrit au nouveau format ; le statut reste « migrée » pour l'interface. */
+        static cfg_t migrated;
+        memcpy(&migrated, &s_cfg, sizeof(migrated));
+        if (config_save(&migrated, NULL) == ESP_OK) {
+            s_status = CFG_STATUS_MIGRATED;
+        }
+    } else if (s_status == CFG_STATUS_OK) {
         ESP_LOGI(TAG, "config v%d chargée (%u octets)", CFG_VERSION, (unsigned)sizeof(cfg_t));
     } else {
         ESP_LOGW(TAG, "valeurs par défaut utilisées : %s", config_status_str(s_status));
@@ -111,7 +147,7 @@ esp_err_t config_save(const cfg_t *in, const char **bad_field)
     s_blob.version = CFG_VERSION;
     s_blob.size = sizeof(cfg_t);
     memcpy(&s_blob.cfg, in, sizeof(s_blob.cfg));
-    s_blob.crc = blob_crc(&s_blob);
+    s_blob.crc = blob_crc(&s_blob, sizeof(s_blob.cfg));
 
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
@@ -150,8 +186,24 @@ const char *config_status_str(cfg_status_t st)
     case CFG_STATUS_RESET_CRC:     return "reset_crc";
     case CFG_STATUS_RESET_INVALID: return "reset_invalid";
     case CFG_STATUS_RESET_READ:    return "reset_read";
+    case CFG_STATUS_MIGRATED:      return "migrated";
     }
     return "unknown";
+}
+
+void config_tariff(const cfg_t *c, tariff_t *out)
+{
+    memset(out, 0, sizeof(*out));
+    out->hphc = c->tariff.type == TARIFF_HPHC;
+    out->n_hc = c->tariff.n_hc;
+    out->price_hp = c->tariff.price_hp;
+    out->price_hc = c->tariff.price_hc;
+    out->price_base = c->tariff.price_base;
+    out->price_sell = c->tariff.price_sell;
+    for (int i = 0; i < CFG_HC_SLOTS_MAX && i < TARIFF_SLOTS_MAX; i++) {
+        out->hc[i].start_min = c->tariff.hc[i].start_min;
+        out->hc[i].end_min = c->tariff.hc[i].end_min;
+    }
 }
 
 bool config_admin_is_set(void)

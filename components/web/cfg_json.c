@@ -108,6 +108,10 @@ cJSON *cfg_to_json(const cfg_t *c)
     cJSON_AddStringToObject(d, "zendure_ip", c->dev.zendure_ip);
     cJSON_AddStringToObject(d, "zendure_sn", c->dev.zendure_sn);
     cJSON_AddStringToObject(d, "tongou_ip", c->dev.tongou_ip);
+    static const char *const shelly_modes[] = { "auto", "triphase", "monophase" };
+    cJSON_AddStringToObject(d, "shelly_mode", c->shelly.mode <= SHELLY_MODE_MONOPHASE
+                                              ? shelly_modes[c->shelly.mode] : "auto");
+    cJSON_AddNumberToObject(d, "shelly_channel", c->shelly.channel);
 
     add_secret(s, "admin_pass", c->sys.admin_pass);
     cJSON_AddNumberToObject(s, "poll_ms", c->sys.poll_ms);
@@ -382,6 +386,26 @@ static const char *dev_from_json(const cJSON *o, cfg_dev_t *d)
     return NULL;
 }
 
+/* Champs v2 du Shelly, exposés dans la section "dev". */
+static const char *shelly_from_json(const cJSON *o, cfg_shelly_t *s)
+{
+    const cJSON *mode = item(o, "shelly_mode");
+    if (mode != NULL) {
+        TRY(cJSON_IsString(mode), "dev.shelly_mode");
+        if (strcmp(mode->valuestring, "auto") == 0) {
+            s->mode = SHELLY_MODE_AUTO;
+        } else if (strcmp(mode->valuestring, "triphase") == 0) {
+            s->mode = SHELLY_MODE_TRIPHASE;
+        } else if (strcmp(mode->valuestring, "monophase") == 0) {
+            s->mode = SHELLY_MODE_MONOPHASE;
+        } else {
+            return "dev.shelly_mode";
+        }
+    }
+    TRY(get_u8(o, "shelly_channel", &s->channel), "dev.shelly_channel");
+    return NULL;
+}
+
 static const char *sys_from_json(const cJSON *o, cfg_sys_t *s)
 {
     TRY(json_get_str(o, "admin_pass", s->admin_pass, sizeof(s->admin_pass), true), "sys.admin_pass");
@@ -413,6 +437,7 @@ const char *cfg_from_json(const cJSON *root, cfg_t *c)
     SECTION("wh", wh_from_json, &c->wh);
     SECTION("roi", roi_from_json, &c->roi);
     SECTION("dev", dev_from_json, &c->dev);
+    SECTION("dev", shelly_from_json, &c->shelly);
     SECTION("sys", sys_from_json, &c->sys);
     return NULL;
 }

@@ -172,6 +172,7 @@ Timeout HTTP **3 s**, au plus 1 nouvel essai, puis `valid = false`. Ne **jamais*
 
 ### 8.1 Shelly Pro 3EM
 - `GET http://<ip>/rpc/EM.GetStatus?id=0` → `total_act_power`, `a_act_power`, `b_act_power`, `c_act_power`.
+- **Profil « monophase »** (constaté sur l'appareil de la maison le 2026-11-04, fw 2.1.0) : `EM.GetStatus` répond 404 ; les canaux sont `em1:0..2` et `GET /rpc/EM1.GetStatus?id=<canal>` → `act_power`. Le canal 0 mesure le réseau. Config `shelly_mode` (auto / triphase / monophase) et `shelly_channel`. `TODO(verify)` : signe de `act_power` pendant une injection.
 - L'authentification doit être désactivée sur le réseau local en v1 (sinon `TODO` : authentification digest).
 - C'est le **capteur maître** : si le Shelly est invalide plus de 30 s → **mode repli** (§10).
 
@@ -202,7 +203,7 @@ Timeout HTTP **3 s**, au plus 1 nouvel essai, puis `valid = false`. Ne **jamais*
 
 ### 8.5 Open-Meteo
 - `GET https://api.open-meteo.com/v1/forecast?latitude=<lat>&longitude=<lon>&hourly=global_tilted_irradiance,temperature_2m&tilt=<inclinaison>&azimuth=<azimut>&timezone=auto&forecast_days=2`
-- `TODO(verify)` : convention d'azimut d'Open-Meteo (0 = sud ?).
+- Vérifié le 2026-11-04 (documentation officielle et essais) : azimut 0 = sud, −90 = est, +90 = ouest ; `tilt` et `azimuth` sont bien pris en compte ; `global_tilted_irradiance` est la **moyenne de l'heure précédente** (W/m²). On ajoute `timeformat=unixtime` (heures en epoch, sans ambiguïté au changement d'heure).
 - Stocker 48 valeurs horaires d'irradiance (W/m²) et de température (°C), interpolées linéairement sur les créneaux de 30 min.
 - ⚠ L'API gratuite d'Open-Meteo est réservée à un **usage non commercial**. Pour une commercialisation, prévoir un abonnement ou une autre source, en gardant le client isolé dans `forecast/`.
 

@@ -2,7 +2,11 @@
 
 #include "esp_err.h"
 
-/* task_poll : lectures séquentielles des appareils (CLAUDE.md §6) et mise à jour de l'état partagé. */
+/* task_grid  : Shelly seul (capteur maître, jamais bloqué par un autre appareil).
+ * task_poll  : Zendure puis Tongou (HTTP local).
+ * task_envoy : Envoy seul (HTTPS, réponse lente).
+ * Constat du 2026-11-04 : avec une seule tâche séquentielle (CLAUDE.md §6), l'Envoy et un
+ * appareil injoignable périmaient le Shelly. Toutes mettent à jour l'état partagé. */
 esp_err_t poll_start(void);
 
 /* Périodes de sondage, ms. Shelly : cfg.sys.poll_ms. */

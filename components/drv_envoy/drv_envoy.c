@@ -9,7 +9,9 @@ static const char *TAG = "drv_envoy";
 
 #define ENVOY_PATH      "/production.json?details=1"
 #define ENVOY_BUF       8192
-#define ENVOY_TIMEOUT_MS 3000
+/* Constaté le 2026-11-04 (fw D8.3) : avec jeton, production.json?details=1 répond en plus de 3 s.
+ * Lu dans task_poll, séparée du Shelly : ce délai ne retarde pas le capteur maître. */
+#define ENVOY_TIMEOUT_MS 8000
 
 static char s_buf[ENVOY_BUF];
 

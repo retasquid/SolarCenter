@@ -15,18 +15,29 @@
 
 static const char *TAG = "poll";
 
-#define POLL_STACK              6144    /* history_on_sample : localtime_r + flows_split */
+#define GRID_STACK              6144    /* history_on_sample : localtime_r + flows_split */
+#define POLL_STACK              5120
 #define POLL_PRIO               5
 #define POLL_CORE               0
 #define POLL_TICK_MS            100
+#define ENVOY_PRIO              4
+#define ENVOY_CORE              1
 #define STALE_PERIODS           3
 #define SHELLY_FALLBACK_MS      30000
 #define ZENDURE_TOLERATED_ERR   3       /* timeouts signalés par d'autres utilisateurs (§8.3) */
 #define PV_NEG_TOLERANCE_W      50.0f
+#define BACKOFF_AFTER_ERR       3       /* échecs consécutifs avant d'espacer les essais */
+#define BACKOFF_MS              30000
 
+static StaticTask_t s_grid_buf;
+static StackType_t s_grid_stack[GRID_STACK];
 static StaticTask_t s_task_buf;
 static StackType_t s_task_stack[POLL_STACK];
-static cfg_t s_cfg;
+static StaticTask_t s_envoy_buf;
+static StackType_t s_envoy_stack[POLL_STACK];
+static cfg_t s_cfg_grid;    /* copie propre à chaque tâche */
+static cfg_t s_cfg_slow;
+static cfg_t s_cfg_envoy;
 
 typedef struct {
     uint32_t period_ms;
@@ -36,13 +47,13 @@ typedef struct {
 
 static sched_t s_sched[DEV_COUNT];
 
-static bool configured(dev_id_t id)
+static bool configured(const cfg_t *cfg, dev_id_t id)
 {
     switch (id) {
-    case DEV_SHELLY:  return s_cfg.dev.shelly_ip[0] != '\0';
-    case DEV_ENVOY:   return s_cfg.dev.envoy_ip[0] != '\0';
-    case DEV_ZENDURE: return s_cfg.dev.zendure_ip[0] != '\0';
-    case DEV_TONGOU:  return s_cfg.dev.tongou_ip[0] != '\0';
+    case DEV_SHELLY:  return cfg->dev.shelly_ip[0] != '\0';
+    case DEV_ENVOY:   return cfg->dev.envoy_ip[0] != '\0';
+    case DEV_ZENDURE: return cfg->dev.zendure_ip[0] != '\0';
+    case DEV_TONGOU:  return cfg->dev.tongou_ip[0] != '\0';
     default:          return false;
     }
 }
@@ -113,13 +124,13 @@ static void account(app_state_t *st, dev_id_t id, esp_err_t err, uint32_t now)
     }
 }
 
-static void poll_device(dev_id_t id, uint32_t now)
+static void poll_device(const cfg_t *cfg, dev_id_t id, uint32_t now)
 {
     esp_err_t err;
     switch (id) {
     case DEV_SHELLY: {
         shelly_reading_t r;
-        err = drv_shelly_poll(&s_cfg, &r);
+        err = drv_shelly_poll(cfg, &r);
         app_state_t *st = app_state_lock();
         if (err == ESP_OK) {
             set_meas(&st->p_grid, r.total_w, QTY_GRID, 0.0f, now, "p_grid");
@@ -136,13 +147,13 @@ static void poll_device(dev_id_t id, uint32_t now)
     }
     case DEV_ENVOY: {
         envoy_reading_t r;
-        err = drv_envoy_poll(&s_cfg, &r);
+        err = drv_envoy_poll(cfg, &r);
         app_state_t *st = app_state_lock();
         if (err == ESP_OK) {
             /* Légère valeur négative (consommation propre du compteur) ramenée à 0 ;
              * au-delà, la borne de plausibilité la rejette. */
             float w = (r.w_now < 0.0f && r.w_now > -PV_NEG_TOLERANCE_W) ? 0.0f : r.w_now;
-            set_meas(&st->p_pv, w, QTY_PV, s_cfg.pv.kwc, now, "p_pv");
+            set_meas(&st->p_pv, w, QTY_PV, cfg->pv.kwc, now, "p_pv");
             st->pv_from_eim = r.from_eim;
         }
         account(st, id, err, now);
@@ -151,7 +162,7 @@ static void poll_device(dev_id_t id, uint32_t now)
     }
     case DEV_ZENDURE: {
         zendure_reading_t r;
-        err = drv_zendure_poll(&s_cfg, &r);
+        err = drv_zendure_poll(cfg, &r);
         app_state_t *st = app_state_lock();
         if (err == ESP_OK) {
             set_meas(&st->p_batt, r.p_batt, QTY_BATT, 0.0f, now, "p_batt");
@@ -168,7 +179,7 @@ static void poll_device(dev_id_t id, uint32_t now)
     }
     case DEV_TONGOU: {
         tongou_reading_t r;
-        err = drv_tongou_poll(&s_cfg, &r);
+        err = drv_tongou_poll(cfg, &r);
         app_state_t *st = app_state_lock();
         if (err == ESP_OK) {
             set_meas(&st->p_ce, r.power_w, QTY_CE, 0.0f, now, "p_ce");
@@ -184,12 +195,12 @@ static void poll_device(dev_id_t id, uint32_t now)
 }
 
 /* État périmé, appareils non configurés, mode repli du Shelly. */
-static void refresh_status(uint32_t now)
+static void refresh_status(const cfg_t *cfg, uint32_t now)
 {
     app_state_t *st = app_state_lock();
     for (int id = 0; id < DEV_COUNT; id++) {
         dev_status_t *d = &st->dev[id];
-        bool cfgd = configured((dev_id_t)id);
+        bool cfgd = configured(cfg, (dev_id_t)id);
         if (!cfgd && d->configured) {
             memset(d, 0, sizeof(*d));
             invalidate(st, (dev_id_t)id);
@@ -211,35 +222,82 @@ static void refresh_status(uint32_t now)
     app_state_unlock();
 }
 
-static void poll_task(void *arg)
+static uint8_t consecutive_errors(dev_id_t id)
+{
+    app_state_t *st = app_state_lock();
+    uint8_t n = st->dev[id].consecutive_err;
+    app_state_unlock();
+    return n;
+}
+
+/* Lectures séquentielles des appareils [first, last] de cette tâche. Un appareil qui échoue
+ * plusieurs fois de suite est interrogé moins souvent, pour ne pas retarder les autres. */
+static void run_devices(const cfg_t *cfg, dev_id_t first, dev_id_t last)
+{
+    for (int id = first; id <= last; id++) {
+        uint32_t now = app_now_ms();
+        if (configured(cfg, (dev_id_t)id) && (int32_t)(now - s_sched[id].next_ms) >= 0) {
+            poll_device(cfg, (dev_id_t)id, now);
+            uint32_t period = s_sched[id].period_ms;
+            if (id != DEV_SHELLY && consecutive_errors((dev_id_t)id) >= BACKOFF_AFTER_ERR && period < BACKOFF_MS) {
+                period = BACKOFF_MS;
+            }
+            s_sched[id].next_ms = now + period;
+            esp_task_wdt_reset();
+        }
+    }
+}
+
+static bool wifi_up(void)
+{
+    app_state_t *st = app_state_lock();
+    bool up = st->wifi_connected;
+    app_state_unlock();
+    return up;
+}
+
+/* task_grid : le Shelly seul, capteur maître. Jamais retardé par un appareil lent (Envoy en TLS,
+ * appareil injoignable) ; c'est aussi elle qui tient l'état périmé et le mode repli à jour. */
+static void grid_task(void *arg)
 {
     ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
     for (;;) {
-        app_state_t st;
-        app_state_get(&st);
-        if (!st.wifi_connected) {
-            refresh_status(app_now_ms());
-            esp_task_wdt_reset();
-            vTaskDelay(pdMS_TO_TICKS(POLL_TICK_MS));
-            continue;
+        config_get(&s_cfg_grid);
+        s_sched[DEV_SHELLY].period_ms = s_cfg_grid.sys.poll_ms;
+        if (wifi_up()) {
+            run_devices(&s_cfg_grid, DEV_SHELLY, DEV_SHELLY);
         }
-        config_get(&s_cfg);
-        s_sched[DEV_SHELLY].period_ms = s_cfg.sys.poll_ms;
-
-        /* Lectures séquentielles : un seul appareil interrogé à la fois. */
-        for (int id = 0; id < DEV_COUNT; id++) {
-            uint32_t now = app_now_ms();
-            if (configured((dev_id_t)id) && (int32_t)(now - s_sched[id].next_ms) >= 0) {
-                s_sched[id].next_ms = now + s_sched[id].period_ms;
-                poll_device((dev_id_t)id, now);
-                esp_task_wdt_reset();
-            }
-        }
-        refresh_status(app_now_ms());
+        refresh_status(&s_cfg_grid, app_now_ms());
         esp_task_wdt_reset();
         vTaskDelay(pdMS_TO_TICKS(POLL_TICK_MS));
     }
 }
+
+/* Tâche de lecture d'une plage d'appareils, chacune avec sa copie de la config. */
+typedef struct {
+    dev_id_t first;
+    dev_id_t last;
+    cfg_t   *cfg;
+} poll_group_t;
+
+static void poll_task(void *arg)
+{
+    const poll_group_t *g = arg;
+    ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
+    for (;;) {
+        if (wifi_up()) {
+            config_get(g->cfg);
+            run_devices(g->cfg, g->first, g->last);
+        }
+        esp_task_wdt_reset();
+        vTaskDelay(pdMS_TO_TICKS(POLL_TICK_MS));
+    }
+}
+
+/* task_poll : Zendure et Tongou (HTTP local, rapides). task_envoy : Envoy seul (HTTPS, réponse
+ * en plusieurs secondes) pour qu'il ne périme pas les lectures du Zendure. */
+static const poll_group_t s_local = { DEV_ZENDURE, DEV_TONGOU, &s_cfg_slow };
+static const poll_group_t s_envoy = { DEV_ENVOY, DEV_ENVOY, &s_cfg_envoy };
 
 esp_err_t poll_start(void)
 {
@@ -248,7 +306,13 @@ esp_err_t poll_start(void)
     s_sched[DEV_ZENDURE] = (sched_t){ .period_ms = POLL_ZENDURE_MS, .tolerated_err = ZENDURE_TOLERATED_ERR };
     s_sched[DEV_TONGOU] = (sched_t){ .period_ms = POLL_TONGOU_MS, .tolerated_err = 1 };
 
-    TaskHandle_t h = xTaskCreateStaticPinnedToCore(poll_task, "task_poll", POLL_STACK, NULL, POLL_PRIO,
-                                                   s_task_stack, &s_task_buf, POLL_CORE);
-    return h != NULL ? ESP_OK : ESP_FAIL;
+    TaskHandle_t g = xTaskCreateStaticPinnedToCore(grid_task, "task_grid", GRID_STACK, NULL, POLL_PRIO,
+                                                   s_grid_stack, &s_grid_buf, POLL_CORE);
+    TaskHandle_t p = xTaskCreateStaticPinnedToCore(poll_task, "task_poll", POLL_STACK, (void *)&s_local,
+                                                   POLL_PRIO, s_task_stack, &s_task_buf, POLL_CORE);
+    /* La négociation TLS de l'Envoy (toutes les 10 s) retardait httpd de 1 à 2 s sur le cœur 0 :
+     * cœur 1, priorité sous httpd. */
+    TaskHandle_t e = xTaskCreateStaticPinnedToCore(poll_task, "task_envoy", POLL_STACK, (void *)&s_envoy,
+                                                   ENVOY_PRIO, s_envoy_stack, &s_envoy_buf, ENVOY_CORE);
+    return (g != NULL && p != NULL && e != NULL) ? ESP_OK : ESP_FAIL;
 }

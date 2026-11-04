@@ -237,7 +237,9 @@ static void ws_broadcast(void *arg)
             };
             esp_err_t err = httpd_ws_send_frame_async(s_srv, fds[i], &f);
             if (err != ESP_OK) {
-                ESP_LOGD(TAG, "envoi WS fd %d : %s", fds[i], esp_err_to_name(err));
+                /* Client qui ne lit plus (onglet en veille…) : fermer plutôt que bloquer httpd à chaque envoi. */
+                ESP_LOGI(TAG, "client WebSocket fd %d injoignable : fermeture", fds[i]);
+                httpd_sess_trigger_close(s_srv, fds[i]);
             }
         }
     }
@@ -264,6 +266,7 @@ esp_err_t web_start(void)
     c.core_id = 0;
     c.max_uri_handlers = 16;
     c.lru_purge_enable = true;
+    c.send_wait_timeout = 2;    /* s ; un client lent ne bloque pas httpd 5 s */
     c.uri_match_fn = httpd_uri_match_wildcard;
 
     httpd_handle_t srv = NULL;

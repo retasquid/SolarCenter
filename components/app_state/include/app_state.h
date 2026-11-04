@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include "freertos/FreeRTOS.h"
 #include "esp_err.h"
+#include "flows.h"
 
 /* Mesure horodatée commune à tous les pilotes (CLAUDE.md §8). */
 typedef struct {
@@ -46,6 +47,7 @@ typedef struct {
     meas_t p_ce;
     meas_t soc;
     float  p_grid_phase[3];
+    bool   grid_mono;           /* Shelly lu en profil monophasé (EM1) */
     bool   pv_from_eim;         /* faux : repli sur la production des micro-onduleurs */
     bool   ce_relay_on;
     zendure_info_t zendure;
@@ -103,3 +105,10 @@ bool app_cmd_receive(app_cmd_t *cmd, TickType_t wait);
 
 /* Horloge monotone en ms (reboucle après ~49 jours : comparer par différence non signée). */
 uint32_t app_now_ms(void);
+
+/* Mesure utilisable : lue, dans ses bornes, appareil configuré et pas périmé. */
+bool app_state_usable(const app_state_t *st, dev_id_t id, const meas_t *m);
+
+/* Entrées de flows_split() : un appareil absent de la config compte pour 0 W.
+ * Retourne vrai si le Shelly est utilisable ; *full = tous les appareils configurés le sont. */
+bool app_state_flows_in(const app_state_t *st, flows_in_t *in, bool *full);

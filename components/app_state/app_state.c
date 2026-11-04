@@ -63,3 +63,25 @@ uint32_t app_now_ms(void)
 {
     return (uint32_t)(esp_timer_get_time() / 1000);
 }
+
+bool app_state_usable(const app_state_t *st, dev_id_t id, const meas_t *m)
+{
+    const dev_status_t *d = &st->dev[id];
+    return m->valid && d->configured && !d->stale;
+}
+
+bool app_state_flows_in(const app_state_t *st, flows_in_t *in, bool *full)
+{
+    bool grid_ok = app_state_usable(st, DEV_SHELLY, &st->p_grid);
+    bool pv_ok = app_state_usable(st, DEV_ENVOY, &st->p_pv);
+    bool batt_ok = app_state_usable(st, DEV_ZENDURE, &st->p_batt);
+    bool ce_ok = app_state_usable(st, DEV_TONGOU, &st->p_ce);
+    in->p_grid = grid_ok ? st->p_grid.value : 0.0f;
+    in->p_pv = pv_ok ? st->p_pv.value : 0.0f;
+    in->p_batt = batt_ok ? st->p_batt.value : 0.0f;
+    in->p_ce = ce_ok ? st->p_ce.value : 0.0f;
+    *full = grid_ok && (pv_ok || !st->dev[DEV_ENVOY].configured) &&
+            (batt_ok || !st->dev[DEV_ZENDURE].configured) &&
+            (ce_ok || !st->dev[DEV_TONGOU].configured);
+    return grid_ok;
+}

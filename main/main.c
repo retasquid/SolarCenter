@@ -11,6 +11,8 @@
 #include "sysmon.h"
 #include "http_util.h"
 #include "poll.h"
+#include "forecast.h"
+#include "history.h"
 
 static const char *TAG = "main";
 
@@ -62,6 +64,8 @@ void app_main(void)
     ESP_ERROR_CHECK(web_start());
     ESP_ERROR_CHECK(sysmon_start());
     if (!net_is_setup_mode()) {
+        ESP_ERROR_CHECK(forecast_start());
+        ESP_ERROR_CHECK(history_start());
         ESP_ERROR_CHECK(poll_start());
     }
 }

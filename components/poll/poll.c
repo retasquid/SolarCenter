@@ -10,11 +10,12 @@
 #include "drv_envoy.h"
 #include "drv_zendure.h"
 #include "drv_tongou.h"
+#include "history.h"
 #include "poll.h"
 
 static const char *TAG = "poll";
 
-#define POLL_STACK              4096
+#define POLL_STACK              6144    /* history_on_sample : localtime_r + flows_split */
 #define POLL_PRIO               5
 #define POLL_CORE               0
 #define POLL_TICK_MS            100
@@ -123,9 +124,14 @@ static void poll_device(dev_id_t id, uint32_t now)
         if (err == ESP_OK) {
             set_meas(&st->p_grid, r.total_w, QTY_GRID, 0.0f, now, "p_grid");
             memcpy(st->p_grid_phase, r.phase_w, sizeof(st->p_grid_phase));
+            st->grid_mono = r.mono;
         }
         account(st, id, err, now);
         app_state_unlock();
+        /* Intégration des énergies au pas du Shelly (§9.9). */
+        app_state_t copy;
+        app_state_get(&copy);
+        history_on_sample(&copy);
         break;
     }
     case DEV_ENVOY: {
@@ -209,6 +215,14 @@ static void poll_task(void *arg)
 {
     ESP_ERROR_CHECK(esp_task_wdt_add(NULL));
     for (;;) {
+        app_state_t st;
+        app_state_get(&st);
+        if (!st.wifi_connected) {
+            refresh_status(app_now_ms());
+            esp_task_wdt_reset();
+            vTaskDelay(pdMS_TO_TICKS(POLL_TICK_MS));
+            continue;
+        }
         config_get(&s_cfg);
         s_sched[DEV_SHELLY].period_ms = s_cfg.sys.poll_ms;
 

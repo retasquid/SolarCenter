@@ -332,7 +332,7 @@ static esp_err_t stats_get(httpd_req_t *req)
         .yield_kwh_kwc = s_cfg.roi.yield_kwh_kwc,
         .capa_kwh = s_cfg.batt.capa_kwh,
         .eta = s_cfg.batt.eta,
-        .price_hp = tf.hphc ? tf.price_hp : tf.price_base,
+        .price_hp = tariff_mean_price(&tf, false),
         .price_sell = tf.price_sell,
         .ratio_surplus = (rc.total_days >= RATIO_SURPLUS_DAYS && rc.pv_kwh > 0.0f)
                          ? rc.surplus_kwh / rc.pv_kwh : RATIO_SURPLUS_DEF,

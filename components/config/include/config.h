@@ -34,3 +34,9 @@ bool config_check_admin(const char *pass);
 
 /* Tarif de la config au format de algo/tariff. */
 void config_tariff(const cfg_t *c, tariff_t *out);
+
+/* Jour et minute locaux (localtime) de l'instant t, pour tariff_price_at(). */
+void config_local_day(int64_t t, tariff_day_t *day, uint16_t *minute);
+
+/* Prix d'achat à l'instant t. */
+float config_price_at(const tariff_t *tf, int64_t t);

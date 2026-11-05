@@ -310,17 +310,22 @@ void history_on_sample(const app_state_t *st)
     bool grid_ok = app_state_flows_in(st, &in, &full);
     uint32_t ms = st->p_grid.ts_ms;
     int64_t now = time(NULL);
-    struct tm tm;
-    local_tm(now, &tm);
-    uint16_t minute = (uint16_t)(tm.tm_hour * 60 + tm.tm_min);
+    tariff_day_t day;
+    uint16_t minute;
+    config_local_day(now, &day, &minute);
 
     xSemaphoreTake(s_mtx, portMAX_DELAY);
     rollover_locked(now);
     if (grid_ok && ms != s_prev_ms) {
         if (s_prev_valid) {
             float dt = (float)(ms - s_prev_ms) / 1000.0f;
-            stats_integrate(&s_slot, &s_prev, &in, dt, full && s_prev_full, tariff_price(&s_tariff, minute),
-                            s_tariff.price_sell, s_tariff.price_hc);
+            /* Prix HC de référence du routage du chauffe-eau : celui de ce jour (saison, week-end). */
+            float price_hc = s_tariff.grid
+                ? s_tariff.grid_price[tariff_high_season(&s_tariff, day.month)]
+                                     [tariff_is_weekend(&s_tariff, &day)][TARIFF_HC]
+                : s_tariff.price_hc;
+            stats_integrate(&s_slot, &s_prev, &in, dt, full && s_prev_full, tariff_price_at(&s_tariff, &day, minute),
+                            s_tariff.price_sell, price_hc);
         }
         s_prev = in;
         s_prev_ms = ms;

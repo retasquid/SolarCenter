@@ -173,6 +173,22 @@ static void test_v2_fields_follow_v1_layout(void)
 {
     TEST_ASSERT_EQUAL_UINT(CFG_V1_SIZE, offsetof(cfg_t, shelly));
     TEST_ASSERT_EQUAL_UINT(CFG_V2_DATA, offsetof(cfg_t, tuya));
+    TEST_ASSERT_TRUE(offsetof(cfg_t, grid) >= CFG_V3_DATA);
+}
+
+static void test_grid_tariff(void)
+{
+    c.tariff.type = TARIFF_GRID;
+    c.tariff.configured = true;
+    TEST_ASSERT_EQUAL_STRING("tariff.hc", cfg_validate(&c));    /* la grille utilise les plages HC */
+    c.tariff.n_hc = 1;
+    c.tariff.hc[0] = slot(22, 34, 6, 34);
+    TEST_ASSERT_NULL(cfg_validate(&c));
+    c.grid.price[1][0][0] = 2.5f;
+    TEST_ASSERT_EQUAL_STRING("tariff.grid", cfg_validate(&c));
+    c.grid.price[1][0][0] = 0.253f;
+    c.grid.high_months = 0x1000;
+    TEST_ASSERT_EQUAL_STRING("tariff.high_months", cfg_validate(&c));
 }
 
 static void test_tuya_fields(void)
@@ -239,5 +255,6 @@ int main(void)
     RUN_TEST(test_v2_fields_follow_v1_layout);
     RUN_TEST(test_shelly_mode_and_channel);
     RUN_TEST(test_tuya_fields);
+    RUN_TEST(test_grid_tariff);
     return UNITY_END();
 }

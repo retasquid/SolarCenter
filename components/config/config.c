@@ -1,5 +1,6 @@
 #include <stddef.h>
 #include <string.h>
+#include <time.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "esp_log.h"
@@ -31,6 +32,7 @@ static SemaphoreHandle_t s_mtx;
 
 _Static_assert(offsetof(cfg_t, shelly) == CFG_V1_SIZE, "les champs v2 doivent suivre cfg_t v1");
 _Static_assert(offsetof(cfg_t, tuya) == CFG_V2_DATA, "les champs v3 doivent suivre cfg_t v2");
+_Static_assert(offsetof(cfg_t, grid) >= CFG_V3_DATA, "les champs v4 doivent suivre cfg_t v3");
 
 static uint32_t blob_crc(const cfg_blob_t *b, size_t size)
 {
@@ -45,6 +47,7 @@ static const struct {
 } k_old_versions[] = {
     { 1, CFG_V1_SIZE, CFG_V1_SIZE },
     { 2, 1108, CFG_V2_DATA },           /* sizeof(cfg_t) v2 : 1106 octets utiles + 2 de remplissage */
+    { 3, 1156, CFG_V3_DATA },           /* sizeof(cfg_t) v3 relevé sur la carte : 1154 utiles + 2 */
 };
 
 /* Préfixe connu recopié, champs ajoutés à leurs valeurs par défaut. */
@@ -212,7 +215,11 @@ const char *config_status_str(cfg_status_t st)
 void config_tariff(const cfg_t *c, tariff_t *out)
 {
     memset(out, 0, sizeof(*out));
-    out->hphc = c->tariff.type == TARIFF_HPHC;
+    out->hphc = c->tariff.type != TARIFF_BASE;
+    out->grid = c->tariff.type == TARIFF_GRID;
+    out->high_months = c->grid.high_months;
+    out->holidays_weekend = c->grid.holidays_weekend != 0;
+    memcpy(out->grid_price, c->grid.price, sizeof(out->grid_price));
     out->n_hc = c->tariff.n_hc;
     out->price_hp = c->tariff.price_hp;
     out->price_hc = c->tariff.price_hc;
@@ -222,6 +229,28 @@ void config_tariff(const cfg_t *c, tariff_t *out)
         out->hc[i].start_min = c->tariff.hc[i].start_min;
         out->hc[i].end_min = c->tariff.hc[i].end_min;
     }
+}
+
+void config_local_day(int64_t t, tariff_day_t *day, uint16_t *minute)
+{
+    struct tm tm;
+    time_t tt = (time_t)t;
+    localtime_r(&tt, &tm);
+    day->year = (int16_t)(tm.tm_year + 1900);
+    day->month = (uint8_t)(tm.tm_mon + 1);
+    day->mday = (uint8_t)tm.tm_mday;
+    day->wday = (uint8_t)tm.tm_wday;
+    if (minute != NULL) {
+        *minute = (uint16_t)(tm.tm_hour * 60 + tm.tm_min);
+    }
+}
+
+float config_price_at(const tariff_t *tf, int64_t t)
+{
+    tariff_day_t d;
+    uint16_t minute;
+    config_local_day(t, &d, &minute);
+    return tariff_price_at(tf, &d, minute);
 }
 
 bool config_admin_is_set(void)

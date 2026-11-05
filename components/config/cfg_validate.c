@@ -140,11 +140,22 @@ static bool date_ok(uint32_t d)
     return !(m == 2 && day == 29 && !leap);
 }
 
+static const char *validate_grid(const cfg_grid_t *g)
+{
+    TRY(g->high_months <= 0x0FFF, "tariff.high_months");
+    TRY(g->holidays_weekend <= 1, "tariff.holidays_weekend");
+    const float *p = &g->price[0][0][0];
+    for (int i = 0; i < 8; i++) {
+        TRY(in_range(p[i], 0.0f, 2.0f), "tariff.grid");
+    }
+    return NULL;
+}
+
 static const char *validate_tariff(const cfg_tariff_t *t)
 {
-    TRY(t->type == TARIFF_BASE || t->type == TARIFF_HPHC, "tariff.type");
+    TRY(t->type <= TARIFF_GRID, "tariff.type");
     TRY(t->n_hc <= CFG_HC_SLOTS_MAX, "tariff.hc");
-    TRY(!(t->configured && t->type == TARIFF_HPHC && t->n_hc == 0), "tariff.hc");
+    TRY(!(t->configured && t->type != TARIFF_BASE && t->n_hc == 0), "tariff.hc");
     for (int i = 0; i < t->n_hc; i++) {
         TRY(slot_ok(&t->hc[i]), "tariff.hc");
         for (int j = 0; j < i; j++) {
@@ -267,6 +278,9 @@ const char *cfg_validate(const cfg_t *c)
         return bad;
     }
     if ((bad = validate_tuya(&c->tuya)) != NULL) {
+        return bad;
+    }
+    if ((bad = validate_grid(&c->grid)) != NULL) {
         return bad;
     }
     if ((bad = validate_tariff(&c->tariff)) != NULL) {

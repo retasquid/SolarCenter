@@ -56,6 +56,10 @@ void cfg_set_defaults(cfg_t *c)
 
     /* TODO(verify) : DP courants des prises Tuya avec mesure (1 = relais, 19 = puissance en 0,1 W),
      * à confirmer sur l'appareil avec « python tools/tuya_ref.py probe ». */
+    /* Saison haute par défaut de novembre à mars (TURPE, délibération CRE du 28/06/2018). Prix à saisir. */
+    c->grid.high_months = (1u << 10) | (1u << 11) | (1u << 0) | (1u << 1) | (1u << 2);
+    c->grid.holidays_weekend = 1;
+
     c->tuya.type = CE_DEV_OPENBEKEN;
     c->tuya.version = 33;
     c->tuya.dp_switch = 1;

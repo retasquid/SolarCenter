@@ -45,7 +45,8 @@ cJSON *cfg_to_json(const cfg_t *c)
         return NULL;
     }
 
-    cJSON_AddStringToObject(t, "type", c->tariff.type == TARIFF_BASE ? "base" : "hphc");
+    cJSON_AddStringToObject(t, "type", c->tariff.type == TARIFF_BASE ? "base"
+                                       : (c->tariff.type == TARIFF_GRID ? "grid" : "hphc"));
     cJSON_AddBoolToObject(t, "configured", c->tariff.configured);
     for (int i = 0; i < c->tariff.n_hc; i++) {
         char buf[24];
@@ -59,6 +60,20 @@ cJSON *cfg_to_json(const cfg_t *c)
     add_num(t, "price_hc", c->tariff.price_hc);
     add_num(t, "price_base", c->tariff.price_base);
     add_num(t, "price_sell", c->tariff.price_sell);
+
+    /* Grille : mois de saison haute (1–12) et 8 prix [saison][semaine/week-end][HP/HC]. */
+    cJSON *hm = cJSON_AddArrayToObject(t, "high_months");
+    cJSON *gp = cJSON_AddArrayToObject(t, "grid");
+    for (int m = 1; m <= 12 && hm != NULL; m++) {
+        if (c->grid.high_months & (1u << (m - 1))) {
+            cJSON_AddItemToArray(hm, cJSON_CreateNumber(m));
+        }
+    }
+    const float *gv = &c->grid.price[0][0][0];
+    for (int i = 0; i < 8 && gp != NULL; i++) {
+        cJSON_AddItemToArray(gp, cJSON_CreateNumber((double)lroundf(gv[i] * 10000.0f) / 10000.0));
+    }
+    cJSON_AddBoolToObject(t, "holidays_weekend", c->grid.holidays_weekend != 0);
 
     add_num(pv, "kwc", c->pv.kwc);
     add_num(pv, "lat", c->pv.lat);
@@ -288,6 +303,8 @@ static const char *tariff_from_json(const cJSON *o, cfg_tariff_t *t)
             t->type = TARIFF_BASE;
         } else if (strcmp(type->valuestring, "hphc") == 0) {
             t->type = TARIFF_HPHC;
+        } else if (strcmp(type->valuestring, "grid") == 0) {
+            t->type = TARIFF_GRID;
         } else {
             return "tariff.type";
         }
@@ -323,6 +340,38 @@ static const char *tariff_from_json(const cJSON *o, cfg_tariff_t *t)
     TRY(get_float(o, "price_sell", &t->price_sell), "tariff.price_sell");
     /* Toute écriture de la section tarif vaut saisie par l'utilisateur. */
     t->configured = true;
+    return NULL;
+}
+
+/* Champs v4 de la grille tarifaire, exposés dans la section "tariff". */
+static const char *grid_from_json(const cJSON *o, cfg_grid_t *g)
+{
+    const cJSON *hm = item(o, "high_months");
+    if (hm != NULL) {
+        TRY(cJSON_IsArray(hm), "tariff.high_months");
+        uint16_t mask = 0;
+        const cJSON *v;
+        cJSON_ArrayForEach(v, hm) {
+            TRY(cJSON_IsNumber(v) && v->valuedouble >= 1 && v->valuedouble <= 12 &&
+                v->valuedouble == (double)(int)v->valuedouble, "tariff.high_months");
+            mask |= (uint16_t)(1u << ((int)v->valuedouble - 1));
+        }
+        g->high_months = mask;
+    }
+    const cJSON *gp = item(o, "grid");
+    if (gp != NULL) {
+        TRY(cJSON_IsArray(gp) && cJSON_GetArraySize(gp) == 8, "tariff.grid");
+        float *dst = &g->price[0][0][0];
+        int i = 0;
+        const cJSON *v;
+        cJSON_ArrayForEach(v, gp) {
+            TRY(cJSON_IsNumber(v), "tariff.grid");
+            dst[i++] = (float)v->valuedouble;
+        }
+    }
+    bool hol = g->holidays_weekend != 0;
+    TRY(get_bool(o, "holidays_weekend", &hol), "tariff.holidays_weekend");
+    g->holidays_weekend = hol ? 1 : 0;
     return NULL;
 }
 
@@ -475,6 +524,7 @@ static const char *sys_from_json(const cJSON *o, cfg_sys_t *s)
 const char *cfg_from_json(const cJSON *root, cfg_t *c)
 {
     SECTION("tariff", tariff_from_json, &c->tariff);
+    SECTION("tariff", grid_from_json, &c->grid);
     SECTION("pv", pv_from_json, &c->pv);
     SECTION("batt", batt_from_json, &c->batt);
     SECTION("wh", wh_from_json, &c->wh);

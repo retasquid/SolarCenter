@@ -5,7 +5,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define CFG_VERSION         3
+#define CFG_VERSION         4
+#define CFG_V3_DATA         1154    /* octets utiles de cfg_t en v3 (fin de cfg_tuya_t) */
 #define CFG_V1_SIZE         1104    /* taille de cfg_t en v1 : les champs v2 sont ajoutés après */
 #define CFG_V2_DATA         1106    /* octets utiles de cfg_t en v2 (fin de cfg_shelly_t) */
 #define CFG_TUYA_ID_LEN     24
@@ -24,6 +25,7 @@
 typedef enum {
     TARIFF_BASE = 0,
     TARIFF_HPHC = 1,
+    TARIFF_GRID = 2,        /* HP/HC × semaine/week-end × saison basse/haute (v4) */
 } tariff_type_t;
 
 /* Plage horaire [start, end[ en minutes depuis minuit ; end < start = passe minuit. */
@@ -129,6 +131,14 @@ typedef struct {
     char     local_key[CFG_TUYA_KEY_LEN];
 } cfg_tuya_t;
 
+/* v4. Grille de prix (tarif TARIFF_GRID), plages HC de cfg_tariff_t appliquées tous les jours. */
+typedef struct {
+    uint16_t high_months;       /* bit (m − 1) = mois m en saison haute */
+    uint8_t  holidays_weekend;  /* jours fériés au prix du week-end */
+    uint8_t  reserved;
+    float    price[2][2][2];    /* €/kWh TTC [saison basse/haute][semaine/week-end][HP/HC] */
+} cfg_grid_t;
+
 typedef struct {
     cfg_tariff_t tariff;
     cfg_pv_t     pv;
@@ -140,6 +150,7 @@ typedef struct {
     /* ---- ajouts en fin de structure uniquement (migration par recopie du préfixe connu) ---- */
     cfg_shelly_t shelly;        /* v2 */
     cfg_tuya_t   tuya;          /* v3 */
+    cfg_grid_t   grid;          /* v4 */
 } cfg_t;
 
 void cfg_set_defaults(cfg_t *c);

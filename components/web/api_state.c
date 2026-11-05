@@ -29,23 +29,51 @@ static void add_tariff(cJSON *r, bool time_ok)
         return;
     }
     cJSON_AddBoolToObject(t, "configured", cfg.tariff.configured);
-    cJSON_AddBoolToObject(t, "hphc", cfg.tariff.type == TARIFF_HPHC);
+    cJSON_AddBoolToObject(t, "hphc", cfg.tariff.type != TARIFF_BASE);
+    cJSON_AddBoolToObject(t, "grid", cfg.tariff.type == TARIFF_GRID);
     if (!cfg.tariff.configured || !time_ok) {
         return;
     }
     tariff_t tf;
     config_tariff(&cfg, &tf);
-    time_t now = time(NULL);
-    struct tm tm;
-    localtime_r(&now, &tm);
-    uint16_t minute = (uint16_t)(tm.tm_hour * 60 + tm.tm_min);
-    bool next_hc = false;
-    uint16_t next = tariff_next_change(&tf, minute, &next_hc);
+    int64_t now = time(NULL);
+    tariff_day_t day;
+    uint16_t minute;
+    config_local_day(now, &day, &minute);
+    float price = tariff_price_at(&tf, &day, minute);
     cJSON_AddBoolToObject(t, "hc", tariff_is_hc(&tf, minute));
-    cJSON_AddNumberToObject(t, "price", (double)lroundf(tariff_price(&tf, minute) * 10000.0f) / 10000.0);
-    if (next > 0) {
-        cJSON_AddNumberToObject(t, "next_min", next);
-        cJSON_AddBoolToObject(t, "next_hc", next_hc);
+    cJSON_AddBoolToObject(t, "weekend", tf.grid && tariff_is_weekend(&tf, &day));
+    cJSON_AddBoolToObject(t, "high_season", tf.grid && tariff_high_season(&tf, day.month));
+    cJSON_AddNumberToObject(t, "price", (double)lroundf(price * 10000.0f) / 10000.0);
+
+    /* Prochain changement de prix : aux bornes des plages HC ou à minuit (week-end, saison). */
+    int64_t day0 = now - minute * 60 - now % 60;
+    int64_t best = 0;
+    float next_price = price;
+    for (int d = 0; d <= 2; d++) {
+        int64_t base = day0 + (int64_t)d * 86400;
+        int64_t cand[2 * TARIFF_SLOTS_MAX + 1];
+        int n = 0;
+        cand[n++] = base;                                   /* minuit */
+        for (int i = 0; tf.hphc && i < tf.n_hc && i < TARIFF_SLOTS_MAX; i++) {
+            cand[n++] = base + tf.hc[i].start_min * 60;
+            cand[n++] = base + tf.hc[i].end_min * 60;
+        }
+        for (int i = 0; i < n; i++) {
+            if (cand[i] <= now || (best != 0 && cand[i] >= best)) {
+                continue;
+            }
+            float p = config_price_at(&tf, cand[i]);
+            if (fabsf(p - price) > 1e-5f) {
+                best = cand[i];
+                next_price = p;
+            }
+        }
+    }
+    if (best != 0) {
+        cJSON_AddNumberToObject(t, "next_min", (double)((best - now + 59) / 60));
+        cJSON_AddNumberToObject(t, "next_price", (double)lroundf(next_price * 10000.0f) / 10000.0);
+        cJSON_AddBoolToObject(t, "next_hc", tariff_is_hc(&tf, (uint16_t)((best - day0) / 60 % 1440)));
     }
 }
 

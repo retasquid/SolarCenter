@@ -153,6 +153,8 @@ static void compute_plan(int64_t now, const app_state_t *st, const tariff_t *tf,
     int64_t t0 = now - now % PLAN_SLOT_S;
     s_pin.t0 = t0;
     s_pin.n = PLAN_SLOTS;
+    /* Prix de l'horizon : HP le plus cher et HC le moins cher (tarif grille : week-end, saison). */
+    float hp_max = -1.0f, hc_min = -1.0f;
     for (int k = 0; k < PLAN_SLOTS; k++) {
         int64_t ts = t0 + (int64_t)k * PLAN_SLOT_S;
         hist_pred_t p;
@@ -160,6 +162,12 @@ static void compute_plan(int64_t now, const app_state_t *st, const tariff_t *tf,
         s_pin.pv_wh[k] = isfinite(p.pv) ? p.pv : 0.0f;
         s_pin.base_wh[k] = isfinite(p.base) ? p.base : 0.0f;
         s_pin.hc[k] = tariff_is_hc(tf, local_minute(ts + PLAN_SLOT_S / 2));
+        float price = config_price_at(tf, ts + PLAN_SLOT_S / 2);
+        if (s_pin.hc[k]) {
+            hc_min = (hc_min < 0.0f || price < hc_min) ? price : hc_min;
+        } else {
+            hp_max = (price > hp_max) ? price : hp_max;
+        }
     }
     bool soc_ok = app_state_usable(st, DEV_ZENDURE, &st->soc);
     s_pin.soc = soc_ok ? st->soc.value : s_cfg.batt.soc_min;
@@ -168,8 +176,8 @@ static void compute_plan(int64_t now, const app_state_t *st, const tariff_t *tf,
     s_pin.capa_kwh = s_cfg.batt.capa_kwh;
     s_pin.eta = s_cfg.batt.eta;
     s_pin.wear_eur_kwh = stats_wear_cost(s_cfg.batt.price_eur, s_cfg.batt.cycles, s_cfg.batt.capa_kwh);
-    s_pin.price_hp = tf->hphc ? tf->price_hp : tf->price_base;
-    s_pin.price_hc = tf->hphc ? tf->price_hc : tf->price_base;
+    s_pin.price_hp = hp_max >= 0.0f ? hp_max : tariff_mean_price(tf, false);
+    s_pin.price_hc = hc_min >= 0.0f ? hc_min : tariff_mean_price(tf, true);
     s_pin.price_sell = tf->price_sell;
     s_pin.e_ce_wh = wh_remaining(&s_reg.wh);
     s_pin.shower_at = next_shower;

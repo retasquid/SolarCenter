@@ -520,11 +520,14 @@ async function pollSystem() {
 // Bornes identiques à cfg_validate() (components/config/cfg_validate.c).
 const SCHEMA = [
   { sec: 'tariff', title: 'Tarif', fields: [
-    { k: 'type', l: 'Type de tarif', t: 'select', opts: [['hphc', 'Heures pleines / heures creuses'], ['base', 'Base']] },
-    { k: 'hc', l: 'Plages heures creuses', t: 'slots', help: 'HH:MM-HH:MM, jusqu\'à 4 plages (ex. 22:00-06:00).' },
-    { k: 'price_hp', l: 'Prix HP', t: 'num', min: 0, max: 2, step: 0.0001, u: '€/kWh' },
-    { k: 'price_hc', l: 'Prix HC', t: 'num', min: 0, max: 2, step: 0.0001, u: '€/kWh' },
-    { k: 'price_base', l: 'Prix base', t: 'num', min: 0, max: 2, step: 0.0001, u: '€/kWh' },
+    { k: 'type', l: 'Type de tarif', t: 'select', opts: [['hphc', 'Heures pleines / heures creuses'], ['grid', 'HP/HC + week-end + saisons'], ['base', 'Base']] },
+    { k: 'hc', l: 'Plages heures creuses', t: 'slots', only: ['hphc', 'grid'], help: 'HH:MM-HH:MM, jusqu\'à 4 plages (ex. 22:00-06:00). Avec la grille : plages de la semaine ; le week-end a ses propres prix HP et HC sur les mêmes plages.' },
+    { k: 'price_hp', l: 'Prix HP', t: 'num', min: 0, max: 2, step: 0.0001, u: '€/kWh', only: ['hphc'] },
+    { k: 'price_hc', l: 'Prix HC', t: 'num', min: 0, max: 2, step: 0.0001, u: '€/kWh', only: ['hphc'] },
+    { k: 'price_base', l: 'Prix base', t: 'num', min: 0, max: 2, step: 0.0001, u: '€/kWh', only: ['base'], help: 'Prix unique du tarif Base (sans heures creuses).' },
+    { k: 'grid', l: 'Prix TTC par période', t: 'grid', u: '€/kWh', only: ['grid'], help: 'Abonnement exclu : énergie + acheminement + taxes au kWh.' },
+    { k: 'high_months', l: 'Mois de saison haute', t: 'monthset', only: ['grid'] },
+    { k: 'holidays_weekend', l: 'Jours fériés au tarif week-end', t: 'bool', only: ['grid'] },
     { k: 'price_sell', l: 'Prix de revente', t: 'num', min: 0, max: 1, step: 0.0001, u: '€/kWh' },
   ] },
   { sec: 'pv', title: 'Installation PV', fields: [
@@ -590,7 +593,9 @@ const SCHEMA = [
   ] },
 ];
 
-const MONTHS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
+const GRID_SEASONS = ['Saison basse', 'Saison haute'];
+const GRID_COLS = ['HP semaine', 'HC semaine', 'HP week-end', 'HC week-end'];
+const MONTHS = ['janv.','févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
 const IP_RE = /^((25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(25[0-5]|2[0-4]\d|1?\d?\d)$/;
 const SLOT_RE = /^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/;
 
@@ -623,8 +628,28 @@ function buildForm() {
         el('input', { type: 'checkbox', id }, row);
         el('label', { for: id, text: f.l }, row);
       } else {
-        el('label', { for: f.t === 'slots' || f.t === 'months' ? fid(s.sec, f.k, 0) : id, text: f.l + (f.u ? ` (${f.u})` : '') }, row);
-        if (f.t === 'select') {
+        el('label', { for: ['slots', 'months', 'grid', 'monthset'].includes(f.t) ? fid(s.sec, f.k, 0) : id, text: f.l + (f.u ? ` (${f.u})` : '') }, row);
+        if (f.t === 'grid') {
+          const tb = el('table', { class: 'grid-prices' }, row);
+          const hd = el('tr', {}, tb);
+          for (const h of ['', 'HP sem.', 'HC sem.', 'HP w-e', 'HC w-e']) el('th', { text: h }, hd);
+          // Ordre de l'API : [saison][semaine/week-end][HP/HC].
+          GRID_SEASONS.forEach((sn, si) => {
+            const tr = el('tr', {}, tb);
+            el('th', { text: sn }, tr);
+            for (let j = 0; j < 4; j++) {
+              const td = el('td', {}, tr);
+              el('input', { id: fid(s.sec, f.k, si * 4 + j), type: 'number', min: 0, max: 2, step: 0.0001, 'aria-label': `${sn} ${GRID_COLS[j]}` }, td);
+            }
+          });
+        } else if (f.t === 'monthset') {
+          const box = el('div', { class: 'multi monthset' }, row);
+          MONTHS.forEach((m, i) => {
+            const lb = el('label', { class: 'chip' }, box);
+            el('input', { type: 'checkbox', id: fid(s.sec, f.k, i) }, lb);
+            lb.append(m);
+          });
+        } else if (f.t === 'select') {
           const sel = el('select', { id }, row);
           for (const [v, l] of f.opts) el('option', { value: v, text: l }, sel);
         } else if (f.t === 'slots') {
@@ -652,7 +677,16 @@ function buildForm() {
     card.addEventListener('input', () => dirty.add(s.sec));
     card.addEventListener('change', () => dirty.add(s.sec));
   }
+  document.getElementById(fid('tariff', 'type')).addEventListener('change', showTariffFields);
   $('#cfg-form').addEventListener('submit', saveConfig);
+}
+
+// N'affiche que les champs utiles au type de tarif choisi.
+function showTariffFields() {
+  const type = document.getElementById(fid('tariff', 'type')).value;
+  for (const f of SCHEMA[0].fields) {
+    if (f.only) document.getElementById(fid('tariff', f.k) + '-row').hidden = !f.only.includes(type);
+  }
 }
 
 function fillForm(cfg) {
@@ -664,6 +698,8 @@ function fillForm(cfg) {
       if (f.t === 'bool') document.getElementById(id).checked = !!val;
       else if (f.t === 'slots') for (let i = 0; i < 4; i++) document.getElementById(fid(s.sec, f.k, i)).value = (val || [])[i] || '';
       else if (f.t === 'months') for (let i = 0; i < 12; i++) document.getElementById(fid(s.sec, f.k, i)).value = (val || [])[i] ?? '';
+      else if (f.t === 'grid') for (let i = 0; i < 8; i++) document.getElementById(fid(s.sec, f.k, i)).value = (val || [])[i] ?? '';
+      else if (f.t === 'monthset') for (let i = 0; i < 12; i++) document.getElementById(fid(s.sec, f.k, i)).checked = (val || []).includes(i + 1);
       else if (f.t === 'secret') {
         const e = document.getElementById(id);
         e.value = '';
@@ -674,6 +710,7 @@ function fillForm(cfg) {
   if (cfg.tariff && !cfg.tariff.configured) {
     setMsg('Tarif non saisi : renseignez la section Tarif.', true);
   }
+  showTariffFields();
   dirty.clear();
 }
 
@@ -707,7 +744,9 @@ function markField(field) {
 // Lit une section ; lève {field, msg} sur la première valeur invalide.
 function readSection(s) {
   const out = {};
+  const type = s.sec === 'tariff' ? document.getElementById(fid('tariff', 'type')).value : null;
   for (const f of s.fields) {
+    if (f.only && !f.only.includes(type)) continue;   // champ masqué : conservé côté serveur
     const id = fid(s.sec, f.k);
     const field = `${s.sec}.${f.k}`;
     const fail = (msg) => { throw { field, msg: `${f.l} : ${msg}` }; };
@@ -720,6 +759,23 @@ function readSection(s) {
         if (!SLOT_RE.test(v)) fail('format HH:MM-HH:MM attendu');
         list.push(v);
       }
+      out[f.k] = list;
+      continue;
+    }
+    if (f.t === 'grid') {
+      const list = [];
+      for (let i = 0; i < 8; i++) {
+        const raw = document.getElementById(fid(s.sec, f.k, i)).value.trim();
+        const v = Number(raw);
+        if (raw === '' || !(v >= 0 && v <= 2)) fail(`${GRID_SEASONS[i >> 2]} ${GRID_COLS[i & 3]} entre 0 et 2`);
+        list.push(v);
+      }
+      out[f.k] = list;
+      continue;
+    }
+    if (f.t === 'monthset') {
+      const list = [];
+      for (let i = 0; i < 12; i++) if (document.getElementById(fid(s.sec, f.k, i)).checked) list.push(i + 1);
       out[f.k] = list;
       continue;
     }
@@ -1074,11 +1130,13 @@ function renderTariff(t) {
   const el = $('#tariff');
   if (!t || !t.configured) { el.textContent = 'Tarif non saisi (Paramètres → Tarif).'; return; }
   if (t.price === undefined) { el.textContent = 'En attente de l\'heure (NTP).'; return; }
-  const name = !t.hphc ? 'Tarif base' : t.hc ? 'Heures creuses' : 'Heures pleines';
+  let name = !t.hphc ? 'Tarif base' : t.hc ? 'Heures creuses' : 'Heures pleines';
+  if (t.grid) name += `${t.weekend ? ' week-end' : ''} · saison ${t.high_season ? 'haute' : 'basse'}`;
   let txt = `${name} · ${fr(t.price, 4)} €/kWh`;
   if (t.next_min) {
     const h = Math.floor(t.next_min / 60), mn = t.next_min % 60;
-    txt += ` · ${t.next_hc ? 'HC' : 'HP'} dans ${h ? h + ' h ' : ''}${String(mn).padStart(h ? 2 : 1, '0')} min`;
+    const next = t.next_price !== undefined ? `${fr(t.next_price, 4)} €/kWh` : (t.next_hc ? 'HC' : 'HP');
+    txt += ` · ${next} dans ${h ? h + ' h ' : ''}${String(mn).padStart(h ? 2 : 1, '0')} min`;
   }
   el.textContent = txt;
   el.classList.toggle('hc', !!t.hc);

@@ -109,6 +109,8 @@ function showPage() {
   if (id === 'parametres') loadConfig();
   if (id === 'previsions') loadForecast();
   if (id === 'historique') loadHistory();
+  if (id === 'systeme') loadLog();
+  if (id === 'accueil') loadPlan();
 }
 
 // ---------- Diagramme des flux ----------
@@ -178,6 +180,8 @@ function buildDiagram() {
         cx: n.x, cy: n.y, r: n.r + 5, class: 'ring', stroke: 'var(--red-soft)',
         transform: `rotate(-90 ${n.x} ${n.y})`,
       }, g);
+      // Marque de la cible du plan sur l'anneau de SOC (§11.3).
+      nodeEls.socMark = svg('line', { class: 'soc-mark', visibility: 'hidden' }, g);
     }
     const circle = svg('circle', { cx: n.x, cy: n.y, r: n.r, class: 'node-bg', stroke: n.color }, g);
     const s = id === 'home' ? 1.7 : id === 'ce' ? 1.2 : 1.45;
@@ -772,6 +776,12 @@ async function saveConfig(ev) {
     setMsg(e.msg, true);
     return;
   }
+  if (body.sys && body.sys.observer === false && !confirm(
+    'Désactiver le mode observateur active le pilotage réel : le SolarFlow et le chauffe-eau recevront des commandes.\n\n' +
+    'Encore à vérifier : signe du Shelly pendant une injection, formule de puissance du SolarFlow, et aucune ' +
+    'sécurité côté appareil sur le Tongou (Tuya) si la carte tombe pendant une chauffe.\n\nContinuer ?')) {
+    return;
+  }
   $('#cfg-save').disabled = true;
   try {
     const r = await getJson('/api/config', {
@@ -1272,6 +1282,117 @@ async function loadHistory() {
   }
 }
 
+// ---------- Plan, chauffe-eau, forçage, journal ----------
+
+const MODE_NAMES = {
+  hc_only: 'Chauffe-eau en heures creuses (soleil pour la batterie)',
+  solar_surplus: 'Batterie d\'abord, chauffe-eau sur le surplus',
+  solar_early: 'Chauffe-eau au soleil de midi',
+};
+let lastPlan = null;
+
+function setSocMark(target) {
+  const m = nodeEls.socMark;
+  if (!m) return;
+  if (target == null) { m.setAttribute('visibility', 'hidden'); return; }
+  const n = NODES.batt;
+  const a = (-90 + 3.6 * target) * Math.PI / 180;
+  const r1 = n.r + 1, r2 = n.r + 10;
+  m.setAttribute('x1', n.x + r1 * Math.cos(a));
+  m.setAttribute('y1', n.y + r1 * Math.sin(a));
+  m.setAttribute('x2', n.x + r2 * Math.cos(a));
+  m.setAttribute('y2', n.y + r2 * Math.sin(a));
+  m.setAttribute('visibility', 'visible');
+}
+
+function renderPlan(p) {
+  lastPlan = p;
+  const mode = $('#ctl-mode');
+  if (!p.running) {
+    mode.textContent = 'En attente de l\'heure (NTP) : aucune décision.';
+    fillDl('ctl', []);
+    return;
+  }
+  mode.textContent = MODE_NAMES[p.mode] || p.mode;
+  const al = [];
+  if (p.observer) al.push(['Mode observateur : décisions calculées et journalisées, aucune commande envoyée.', 'info']);
+  else al.push(['Pilotage réel actif : la batterie et le chauffe-eau reçoivent les commandes.']);
+  if (p.wh.catchup_blocked) al.push(['Rattrapage interdit en heures pleines : eau peut-être tiède ce soir.']);
+  if (p.wh.last_full && Date.now() / 1000 - p.wh.last_full > 86400) al.push(['Aucune coupure du thermostat depuis plus de 24 h.']);
+  alertBox('ctl-alerts', al);
+
+  const wh = p.wh;
+  let next;
+  if (wh.tank_full) next = `✔ Ballon chauffé (thermostat coupé à ${hhmm(wh.last_full)})`;
+  else if (p.night.active && p.night.end > Date.now() / 1000) {
+    next = `Nuit : ${hhmm(p.night.start)} → ${hhmm(p.night.end)} (${fmtKwh(p.night.e_wh)}${p.night.full ? ', complète' : ''})`;
+  } else next = `Rattrapage à ${hhmm(wh.catchup_at)} si le soleil ne suffit pas`;
+  const d = p.decision;
+  const ovr = p.override.mode !== 'auto' ? ` · forçage ${p.override.mode.toUpperCase()} jusqu'à ${hhmm(p.override.until)}` : '';
+  fillDl('ctl', [
+    ['Prochaine chauffe', next],
+    ['Chauffe-eau', `${d.relay ? 'ON' : 'OFF'} — ${d.ce_reason}${ovr}`],
+    ['Batterie', `${d.batt_sp > 0 ? '▼ ' : d.batt_sp < 0 ? '▲ ' : ''}${fmtW(d.batt_sp)} — ${d.batt_reason}`],
+    ['Énergie du cycle', `${fmtKwh(wh.e_heated_wh)} sur ${fmtKwh(wh.e_full_wh)} (chauffe complète apprise)`],
+    ['Prévu jusqu\'aux HC', `surplus ${fmtKwh(p.S_wh)}, batterie ${fmtKwh(p.B_wh)}, ballon ${fmtKwh(p.E_ce_wh)}`],
+    ['SOC cible', p.soc_target_now != null ? `${Math.round(p.soc_target_now)} %` : '—'],
+  ]);
+  setSocMark(p.soc_target_now);
+}
+
+async function loadPlan() {
+  try {
+    renderPlan(await getJson('/api/plan'));
+  } catch (e) {
+    $('#ctl-mode').textContent = 'Plan indisponible.';
+  }
+}
+
+document.querySelectorAll('.ovr button').forEach((b) => b.addEventListener('click', async () => {
+  const mode = b.dataset.ovr;
+  try {
+    await getJson('/api/override', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target: 'ce', mode, minutes: 30 }),
+    });
+    loadPlan();
+  } catch (e) {
+    alertBox('ctl-alerts', [[`Forçage refusé : ${e.message}`]]);
+  }
+}));
+
+async function loadLog() {
+  let j;
+  try {
+    j = await getJson('/api/log');
+  } catch (e) {
+    return;
+  }
+  const t = $('#log');
+  const head = ['Heure', 'Mode', 'Chauffe-eau', 'Batterie', 'Réseau', 'SOC', 'Plan'];
+  const rows = [head];
+  for (const l of j.lines) {
+    rows.push([
+      `${dayLabel(l.t)} ${hhmm(l.t)}`,
+      l.obs ? 'observateur' : 'pilotage',
+      `${l.relay ? 'ON' : 'OFF'} — ${l.ce}`,
+      `${l.sp > 0 ? '+' : ''}${l.sp} W — ${l.batt}`,
+      `${l.grid > 0 ? '→ ' : '← '}${Math.abs(l.grid)} W${l.fallback ? ' (repli)' : ''}`,
+      l.soc == null ? '—' : `${l.soc} %`,
+      `${l.mode}${l.hc ? ', HC' : ''}${l.full ? ', ballon plein' : ''}`,
+    ]);
+  }
+  t.replaceChildren(...rows.map((r, i) => {
+    const tr = document.createElement('tr');
+    for (const c of r) {
+      const cell = document.createElement(i === 0 ? 'th' : 'td');
+      cell.textContent = c;
+      tr.append(cell);
+    }
+    return tr;
+  }));
+}
+
 // ---------- Démarrage ----------
 
 segment('.flow-card .seg', 'unit', (u) => {
@@ -1293,5 +1414,12 @@ pollState();
 connectWs();
 pollSystem();
 refreshHome();
+loadPlan();
 setInterval(() => { if (!document.hidden) pollSystem(); }, SYSTEM_POLL_MS);
 setInterval(() => { if (!document.hidden) refreshHome(); }, 60000);
+setInterval(() => {
+  if (document.hidden) return;
+  const page = location.hash.slice(1) || DEFAULT_PAGE;
+  if (page === 'accueil') loadPlan();
+  if (page === 'systeme') loadLog();
+}, 10000);

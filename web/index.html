@@ -62,6 +62,18 @@
             <p id="roi-txt" class="roi-txt">—</p>
           </div>
         </article>
+        <article class="card" id="ctl-card">
+          <h2>Chauffe-eau et plan</h2>
+          <p id="ctl-mode" class="ctl-mode">—</p>
+          <div id="ctl-alerts" class="alerts"></div>
+          <dl id="ctl"></dl>
+          <div class="ovr" role="group" aria-label="Forçage du chauffe-eau">
+            <button type="button" data-ovr="on">Forcer ON 30 min</button>
+            <button type="button" data-ovr="off">Forcer OFF 30 min</button>
+            <button type="button" data-ovr="auto">Auto</button>
+          </div>
+          <p class="hint">Thermostat du ballon à 55 °C ou plus : la chauffe complète quotidienne couvre alors l'anti-légionelle.</p>
+        </article>
         <article class="card">
           <h2>Tarif en cours</h2>
           <p id="tariff" class="tariff">—</p>
@@ -140,6 +152,11 @@
       <article class="card"><h2>Matériel</h2><dl id="sys-hw"></dl></article>
       <article class="card"><h2>Configuration</h2><dl id="sys-cfg"></dl></article>
     </div>
+    <article class="card log-card">
+      <h2>Journal des décisions</h2>
+      <p class="hint">Une ligne à chaque changement de décision, et au moins toutes les 5 minutes (200 lignes en mémoire).</p>
+      <div class="table-wrap"><table id="log"></table></div>
+    </article>
   </section>
 </main>
 

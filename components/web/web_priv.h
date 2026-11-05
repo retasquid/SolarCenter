@@ -36,6 +36,9 @@ cJSON *state_to_json(void);
 /* Historique, prévisions, statistiques, réinitialisation des modèles. */
 esp_err_t api_hist_register(httpd_handle_t srv);
 
+/* Plan, journal des décisions, forçage du chauffe-eau. */
+esp_err_t api_ctl_register(httpd_handle_t srv);
+
 /* Écriture JSON par morceaux (réponses longues sans arbre cJSON en mémoire). */
 typedef struct {
     httpd_req_t *req;

@@ -259,5 +259,6 @@ esp_err_t api_register(httpd_handle_t srv)
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
         ESP_RETURN_ON_ERROR(httpd_register_uri_handler(srv, &routes[i]), TAG, "%s", routes[i].uri);
     }
-    return api_hist_register(srv);
+    ESP_RETURN_ON_ERROR(api_hist_register(srv), TAG, "historique");
+    return api_ctl_register(srv);
 }

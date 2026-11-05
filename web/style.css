@@ -134,6 +134,28 @@ dd.dim { color: var(--text-3); }
 .spark-zero { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .link { background: none; border: 0; color: var(--text-2); font: inherit; cursor: pointer; padding: 0 4px; }
 
+/* ---------- Chauffe-eau et plan, journal ---------- */
+
+.soc-mark { stroke: var(--white); stroke-width: 2.5; stroke-linecap: round; }
+.ctl-mode { margin: 0 0 10px; font-weight: 600; }
+#ctl-alerts { margin: 0 0 10px; }
+#ctl dd { font-size: 13px; }
+.ovr { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.ovr button {
+  flex: 1 1 auto;
+  padding: 8px 10px;
+  background: var(--surface-2);
+  color: var(--white);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.ovr button:hover { border-color: var(--text-3); }
+.log-card { margin-top: 12px; }
+.log-card .table-wrap { max-height: 480px; }
+
 /* ---------- Commandes segmentées ---------- */
 
 .seg { display: inline-flex; gap: 2px; padding: 2px; margin-bottom: 10px; background: var(--surface-2); border-radius: 8px; }

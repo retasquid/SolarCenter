@@ -185,9 +185,9 @@ static void test_tuya_fields(void)
     strcpy(c.tuya.local_key, "trop-courte");
     TEST_ASSERT_EQUAL_STRING("dev.tuya_key", cfg_validate(&c));
     c.tuya.local_key[0] = '\0';
-    c.tuya.version = 35;
+    c.tuya.version = 36;
     TEST_ASSERT_EQUAL_STRING("dev.tuya_version", cfg_validate(&c));
-    c.tuya.version = 34;
+    c.tuya.version = 35;
     strcpy(c.tuya.dev_id, "bf12-34");
     TEST_ASSERT_EQUAL_STRING("dev.tuya_id", cfg_validate(&c));
 }

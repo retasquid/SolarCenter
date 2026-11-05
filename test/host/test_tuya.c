@@ -30,7 +30,40 @@ static int stub_hmac(const uint8_t key[16], const uint8_t *data, size_t len, uin
     return lookup(2, key, data, len, out, 32);
 }
 
-static const tuya_crypto_t C = { stub_aes, stub_hmac };
+/* Table GCM : entrée = IV ‖ AAD ‖ données (‖ étiquette en déchiffrement), sortie = chiffré ‖ étiquette
+ * (chiffrement) ou clair (déchiffrement). */
+static int stub_gcm(const uint8_t key[16], bool decrypt, const uint8_t iv[12], const uint8_t *aad, size_t aad_len,
+                    const uint8_t *in, size_t len, uint8_t *out, uint8_t tag[16])
+{
+    uint8_t q[TUYA_MAX_FRAME + 64];
+    uint8_t r[TUYA_MAX_FRAME + 16];
+    size_t n = 0;
+    memcpy(q + n, iv, 12);
+    n += 12;
+    if (aad_len) {
+        memcpy(q + n, aad, aad_len);
+        n += aad_len;
+    }
+    memcpy(q + n, in, len);
+    n += len;
+    if (decrypt) {
+        memcpy(q + n, tag, 16);
+        n += 16;
+        if (lookup(4, key, q, n, r, len) != 0) {
+            return -1;
+        }
+        memcpy(out, r, len);
+        return 0;
+    }
+    if (lookup(3, key, q, n, r, len + 16) != 0) {
+        return -1;
+    }
+    memcpy(out, r, len);
+    memcpy(tag, r + len, 16);
+    return 0;
+}
+
+static const tuya_crypto_t C = { stub_aes, stub_hmac, stub_gcm };
 static const uint8_t *KEY = (const uint8_t *)TV_KEY;
 static uint8_t buf[TUYA_MAX_FRAME];
 static uint8_t frame[TUYA_MAX_FRAME];
@@ -100,7 +133,7 @@ static void test_v33_bad_crc_detected(void)
 static void test_v34_session_key(void)
 {
     uint8_t sk[16];
-    TEST_ASSERT_EQUAL_INT(0, tuya_session_key(KEY, tv_lnonce, tv_rnonce, &C, sk));
+    TEST_ASSERT_EQUAL_INT(0, tuya_session_key(TUYA_V34, KEY, tv_lnonce, tv_rnonce, &C, sk));
     TEST_ASSERT_EQUAL_HEX8_ARRAY(tv_skey, sk, 16);
 }
 
@@ -139,6 +172,64 @@ static void test_v34_parse_device_reply(void)
     TEST_ASSERT_EQUAL_STRING(tv_r34_json, (const char *)out);
 }
 
+/* ---------- 3.5 ---------- */
+
+static void test_v35_session_key(void)
+{
+    uint8_t sk[16];
+    TEST_ASSERT_EQUAL_INT(0, tuya_session_key(TUYA_V35, KEY, tv_lnonce, tv_rnonce, &C, sk));
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(tv_skey35, sk, 16);
+}
+
+static void test_v35_negotiation_frames(void)
+{
+    int n = tuya_encode_payload(TUYA_V35, TUYA_CMD_SESS_START, tv_lnonce, 16, KEY, &C, buf, sizeof(buf));
+    TEST_ASSERT_EQUAL_INT(16, n);                       /* pas d'en-tête de version, pas de remplissage */
+    n = tuya_build_frame_6699(1, TUYA_CMD_SESS_START, buf, (size_t)n, KEY, tv_iv_a, &C, frame, sizeof(frame));
+    TEST_ASSERT_EQUAL_INT(sizeof(tv_neg35), n);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(tv_neg35, frame, n);
+
+    /* Réponse de l'appareil : code retour, nonce distant, HMAC du nonce local. */
+    tuya_frame_t f;
+    static uint8_t plain[256];
+    TEST_ASSERT_EQUAL_INT(sizeof(tv_resp35), tuya_frame_len(tv_resp35, sizeof(tv_resp35)));
+    TEST_ASSERT_EQUAL_INT(0, tuya_parse_frame_6699(tv_resp35, sizeof(tv_resp35), KEY, &C, &f, plain, sizeof(plain)));
+    TEST_ASSERT_EQUAL_HEX32(TUYA_CMD_SESS_RESP, f.cmd);
+    TEST_ASSERT_EQUAL_UINT32(0, f.retcode);
+    TEST_ASSERT_EQUAL_INT(48, f.len);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(tv_rnonce, f.payload, 16);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(tv_hmac_ln, f.payload + 16, 32);
+}
+
+static void test_v35_query_and_reply(void)
+{
+    char json[16];
+    TEST_ASSERT_TRUE(tuya_query_json(TUYA_V35, TV_DEV, TV_T, json, sizeof(json)) > 0);
+    int n = tuya_encode_payload(TUYA_V35, TUYA_CMD_DP_QUERY_NEW, (const uint8_t *)json, strlen(json), tv_skey35, &C,
+                                buf, sizeof(buf));
+    n = tuya_build_frame_6699(2, TUYA_CMD_DP_QUERY_NEW, buf, (size_t)n, tv_skey35, tv_iv_c, &C, frame, sizeof(frame));
+    TEST_ASSERT_EQUAL_INT(sizeof(tv_q35), n);
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(tv_q35, frame, n);
+
+    tuya_frame_t f;
+    static uint8_t plain[256];
+    TEST_ASSERT_EQUAL_INT(0, tuya_parse_frame_6699(tv_r35, sizeof(tv_r35), tv_skey35, &C, &f, plain, sizeof(plain)));
+    uint8_t out[256];
+    n = tuya_decode_payload(TUYA_V35, f.payload, f.len, tv_skey35, &C, out, sizeof(out));
+    TEST_ASSERT_TRUE(n > 0);
+    TEST_ASSERT_EQUAL_STRING(tv_r35_json, (const char *)out);
+}
+
+static void test_v35_bad_tag_rejected(void)
+{
+    uint8_t copy[sizeof(tv_r35)];
+    memcpy(copy, tv_r35, sizeof(copy));
+    copy[sizeof(copy) - 6] ^= 0x01;                     /* étiquette GCM altérée */
+    tuya_frame_t f;
+    static uint8_t plain[256];
+    TEST_ASSERT_EQUAL_INT(-1, tuya_parse_frame_6699(copy, sizeof(copy), tv_skey35, &C, &f, plain, sizeof(plain)));
+}
+
 static void test_rejects_malformed(void)
 {
     tuya_frame_t f;
@@ -160,6 +251,10 @@ int main(void)
     RUN_TEST(test_v34_negotiation_start_frame);
     RUN_TEST(test_v34_query_and_control_frames);
     RUN_TEST(test_v34_parse_device_reply);
+    RUN_TEST(test_v35_session_key);
+    RUN_TEST(test_v35_negotiation_frames);
+    RUN_TEST(test_v35_query_and_reply);
+    RUN_TEST(test_v35_bad_tag_rejected);
     RUN_TEST(test_rejects_malformed);
     return UNITY_END();
 }

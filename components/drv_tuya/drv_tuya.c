@@ -65,7 +65,42 @@ static int psa_hmac(const uint8_t key[TUYA_KEY_LEN], const uint8_t *data, size_t
     return (st == PSA_SUCCESS && olen == TUYA_HMAC_LEN) ? 0 : -1;
 }
 
-static const tuya_crypto_t k_crypto = { psa_aes_ecb, psa_hmac };
+static int psa_gcm(const uint8_t key[TUYA_KEY_LEN], bool decrypt, const uint8_t iv[TUYA_IV_LEN], const uint8_t *aad,
+                   size_t aad_len, const uint8_t *in, size_t len, uint8_t *out, uint8_t tag[TUYA_TAG_LEN])
+{
+    psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+    psa_set_key_type(&attr, PSA_KEY_TYPE_AES);
+    psa_set_key_bits(&attr, 128);
+    psa_set_key_usage_flags(&attr, decrypt ? PSA_KEY_USAGE_DECRYPT : PSA_KEY_USAGE_ENCRYPT);
+    psa_set_key_algorithm(&attr, PSA_ALG_GCM);
+    mbedtls_svc_key_id_t id;
+    if (len + TUYA_TAG_LEN > sizeof(s_tmp) || psa_import_key(&attr, key, TUYA_KEY_LEN, &id) != PSA_SUCCESS) {
+        return -1;
+    }
+    size_t olen = 0;
+    psa_status_t st;
+    if (decrypt) {
+        /* PSA attend chiffré ‖ étiquette. */
+        memcpy(s_tmp, in, len);
+        memcpy(s_tmp + len, tag, TUYA_TAG_LEN);
+        st = psa_aead_decrypt(id, PSA_ALG_GCM, iv, TUYA_IV_LEN, aad, aad_len, s_tmp, len + TUYA_TAG_LEN,
+                              out, len, &olen);
+        st = (st == PSA_SUCCESS && olen == len) ? PSA_SUCCESS : PSA_ERROR_INVALID_SIGNATURE;
+    } else {
+        st = psa_aead_encrypt(id, PSA_ALG_GCM, iv, TUYA_IV_LEN, aad, aad_len, in, len, s_tmp,
+                              len + TUYA_TAG_LEN, &olen);
+        if (st == PSA_SUCCESS && olen == len + TUYA_TAG_LEN) {
+            memcpy(out, s_tmp, len);
+            memcpy(tag, s_tmp + len, TUYA_TAG_LEN);
+        } else {
+            st = PSA_ERROR_GENERIC_ERROR;
+        }
+    }
+    psa_destroy_key(id);
+    return st == PSA_SUCCESS ? 0 : -1;
+}
+
+static const tuya_crypto_t k_crypto = { psa_aes_ecb, psa_hmac, psa_gcm };
 
 /* ---------- Socket ---------- */
 
@@ -119,17 +154,35 @@ static bool recv_all(int s, uint8_t *buf, size_t len)
     return true;
 }
 
-/* Lit une trame complète dans s_rx ; retourne sa longueur ou −1. */
+/* Lit une trame complète (55AA ou 6699) dans s_rx ; retourne sa longueur ou −1. */
 static int recv_frame(int s)
 {
-    if (!recv_all(s, s_rx, TUYA_HDR_LEN)) {
+    if (!recv_all(s, s_rx, 4)) {
         return -1;
     }
-    int total = tuya_frame_len(s_rx, TUYA_HDR_LEN);
-    if (total < 0 || !recv_all(s, s_rx + TUYA_HDR_LEN, (size_t)total - TUYA_HDR_LEN)) {
+    size_t hdr = (s_rx[2] == 0x66 && s_rx[3] == 0x99) ? TUYA_HDR6699_LEN : TUYA_HDR_LEN;
+    if (!recv_all(s, s_rx + 4, hdr - 4)) {
+        return -1;
+    }
+    int total = tuya_frame_len(s_rx, hdr);
+    if (total < 0 || !recv_all(s, s_rx + hdr, (size_t)total - hdr)) {
         return -1;
     }
     return total;
+}
+
+/* Lit et authentifie une trame : charge utile chiffrée (3.3/3.4) ou déjà déchiffrée (3.5). */
+static int recv_parse(int s, tuya_ver_t v, const uint8_t *key, const uint8_t *hmac_key, tuya_frame_t *f)
+{
+    static uint8_t plain[TUYA_MAX_FRAME];
+    int n = recv_frame(s);
+    if (n < 0) {
+        return -1;
+    }
+    if (v == TUYA_V35) {
+        return tuya_parse_frame_6699(s_rx, (size_t)n, key, &k_crypto, f, plain, sizeof(plain));
+    }
+    return tuya_parse_frame(s_rx, (size_t)n, hmac_key, &k_crypto, f);
 }
 
 static esp_err_t send_cmd(int s, tuya_ver_t v, uint32_t cmd, const uint8_t *plain, size_t len,
@@ -140,46 +193,64 @@ static esp_err_t send_cmd(int s, tuya_ver_t v, uint32_t cmd, const uint8_t *plai
     if (n < 0) {
         return ESP_ERR_INVALID_SIZE;
     }
-    n = tuya_build_frame(++s_seq, cmd, enc, (size_t)n, hmac_key, &k_crypto, s_tx, sizeof(s_tx));
+    if (v == TUYA_V35) {
+        uint8_t iv[TUYA_IV_LEN];
+        esp_fill_random(iv, sizeof(iv));        /* IV aléatoire à chaque trame (tinytuya : os.urandom(12)) */
+        n = tuya_build_frame_6699(++s_seq, cmd, enc, (size_t)n, key, iv, &k_crypto, s_tx, sizeof(s_tx));
+    } else {
+        n = tuya_build_frame(++s_seq, cmd, enc, (size_t)n, hmac_key, &k_crypto, s_tx, sizeof(s_tx));
+    }
     if (n < 0) {
         return ESP_ERR_INVALID_SIZE;
     }
     return send(s, s_tx, (size_t)n, 0) == n ? ESP_OK : ESP_FAIL;
 }
 
-/* 3.4 : négociation de la clé de session (tinytuya _negotiate_session_key). */
-static esp_err_t negotiate(int s, const uint8_t real_key[TUYA_KEY_LEN], uint8_t session[TUYA_KEY_LEN])
+/* 3.4 / 3.5 : négociation de la clé de session (tinytuya _negotiate_session_key). */
+static esp_err_t negotiate(int s, tuya_ver_t v, const uint8_t real_key[TUYA_KEY_LEN], uint8_t session[TUYA_KEY_LEN])
 {
     uint8_t ln[TUYA_NONCE_LEN];
     esp_fill_random(ln, sizeof(ln));
-    esp_err_t err = send_cmd(s, TUYA_V34, TUYA_CMD_SESS_START, ln, sizeof(ln), real_key, real_key);
+    esp_err_t err = send_cmd(s, v, TUYA_CMD_SESS_START, ln, sizeof(ln), real_key, real_key);
     if (err != ESP_OK) {
         return err;
     }
-    int n = recv_frame(s);
     tuya_frame_t f;
-    if (n < 0 || tuya_parse_frame(s_rx, (size_t)n, real_key, &k_crypto, &f) != 0 || f.cmd != TUYA_CMD_SESS_RESP) {
+    if (recv_parse(s, v, real_key, real_key, &f) != 0 || f.cmd != TUYA_CMD_SESS_RESP) {
         return ESP_ERR_INVALID_RESPONSE;
     }
-    if (f.len == 0 || f.len % 16 != 0 || f.len > sizeof(s_plain) ||
-        psa_aes_ecb(real_key, true, f.payload, f.len, s_plain) != 0 || f.len < 48) {
+    const uint8_t *resp = f.payload;
+    if (v == TUYA_V34) {
+        /* 3.4 : réponse chiffrée en AES-ECB avec la clé locale. */
+        if (f.len == 0 || f.len % 16 != 0 || f.len > sizeof(s_plain) ||
+            psa_aes_ecb(real_key, true, f.payload, f.len, s_plain) != 0) {
+            return ESP_ERR_INVALID_RESPONSE;
+        }
+        resp = s_plain;
+    }
+    if (f.len < 48) {
         return ESP_ERR_INVALID_RESPONSE;
     }
     uint8_t rn[TUYA_NONCE_LEN];
-    memcpy(rn, s_plain, sizeof(rn));
+    memcpy(rn, resp, sizeof(rn));
     uint8_t mac[TUYA_HMAC_LEN];
-    if (psa_hmac(real_key, ln, sizeof(ln), mac) != 0 || memcmp(mac, s_plain + 16, TUYA_HMAC_LEN) != 0) {
+    if (psa_hmac(real_key, ln, sizeof(ln), mac) != 0 || memcmp(mac, resp + 16, TUYA_HMAC_LEN) != 0) {
         ESP_LOGW(TAG, "négociation : HMAC incorrect (clé locale ?)");
         return ESP_ERR_INVALID_CRC;
     }
     if (psa_hmac(real_key, rn, sizeof(rn), mac) != 0) {
         return ESP_FAIL;
     }
-    err = send_cmd(s, TUYA_V34, TUYA_CMD_SESS_FINISH, mac, sizeof(mac), real_key, real_key);
+    err = send_cmd(s, v, TUYA_CMD_SESS_FINISH, mac, sizeof(mac), real_key, real_key);
     if (err != ESP_OK) {
         return err;
     }
-    return tuya_session_key(real_key, ln, rn, &k_crypto, session) == 0 ? ESP_OK : ESP_FAIL;
+    return tuya_session_key(v, real_key, ln, rn, &k_crypto, session) == 0 ? ESP_OK : ESP_FAIL;
+}
+
+static tuya_ver_t cfg_version(const cfg_t *cfg)
+{
+    return cfg->tuya.version == 35 ? TUYA_V35 : (cfg->tuya.version == 34 ? TUYA_V34 : TUYA_V33);
 }
 
 /* Ouvre la connexion et prépare la clé (session en 3.4). */
@@ -192,10 +263,10 @@ static int open_session(const cfg_t *cfg, tuya_ver_t v, uint8_t key[TUYA_KEY_LEN
     }
     memcpy(key, cfg->tuya.local_key, TUYA_KEY_LEN);
     *err = ESP_OK;
-    if (v == TUYA_V34) {
+    if (v != TUYA_V33) {
         uint8_t real[TUYA_KEY_LEN];
         memcpy(real, key, sizeof(real));
-        *err = negotiate(s, real, key);
+        *err = negotiate(s, v, real, key);
     }
     if (*err != ESP_OK) {
         close(s);
@@ -237,9 +308,8 @@ static esp_err_t parse_dps(const cfg_t *cfg, const char *json, tuya_reading_t *o
 static esp_err_t read_reply(int s, tuya_ver_t v, const uint8_t *key, const uint8_t *hmac_key)
 {
     for (int i = 0; i < TUYA_MAX_FRAMES; i++) {
-        int n = recv_frame(s);
         tuya_frame_t f;
-        if (n < 0 || tuya_parse_frame(s_rx, (size_t)n, hmac_key, &k_crypto, &f) != 0) {
+        if (recv_parse(s, v, key, hmac_key, &f) != 0) {
             return ESP_ERR_INVALID_RESPONSE;
         }
         if (!f.auth_ok) {
@@ -266,7 +336,7 @@ static esp_err_t read_reply(int s, tuya_ver_t v, const uint8_t *key, const uint8
 
 static esp_err_t poll_once(const cfg_t *cfg, tuya_reading_t *out)
 {
-    tuya_ver_t v = cfg->tuya.version == 34 ? TUYA_V34 : TUYA_V33;
+    tuya_ver_t v = cfg_version(cfg);
     uint8_t key[TUYA_KEY_LEN];
     esp_err_t err;
     int s = open_session(cfg, v, key, &err);
@@ -274,9 +344,9 @@ static esp_err_t poll_once(const cfg_t *cfg, tuya_reading_t *out)
         return err;
     }
     char json[160];
-    uint32_t cmd = v == TUYA_V34 ? TUYA_CMD_DP_QUERY_NEW : TUYA_CMD_DP_QUERY;
+    uint32_t cmd = v == TUYA_V33 ? TUYA_CMD_DP_QUERY : TUYA_CMD_DP_QUERY_NEW;
     int n = tuya_query_json(v, cfg->tuya.dev_id, (uint32_t)time(NULL), json, sizeof(json));
-    const uint8_t *hk = v == TUYA_V34 ? key : NULL;
+    const uint8_t *hk = v == TUYA_V34 ? key : NULL;     /* HMAC en 3.4 ; 3.5 : étiquette GCM */
     err = n < 0 ? ESP_ERR_INVALID_SIZE : send_cmd(s, v, cmd, (const uint8_t *)json, (size_t)n, key, hk);
     if (err == ESP_OK) {
         err = read_reply(s, v, key, hk);
@@ -305,11 +375,27 @@ static bool crypto_selftest(void)
         0xb0, 0x78, 0x5c, 0x28, 0x9e, 0x34, 0xbe, 0x92, 0xfa, 0x9f, 0x34, 0x0d, 0xaa, 0x07, 0xc0, 0xe0,
         0x83, 0x9c, 0x9b, 0xb8, 0xb2, 0xfd, 0xb1, 0xd4, 0xc1, 0x19, 0xd9, 0x46, 0x2e, 0x8a, 0xed, 0x4c,
     };
-    uint8_t sk[16], mac[32], back[16];
-    bool ok = tuya_session_key(key, ln, rn, &k_crypto, sk) == 0 && memcmp(sk, sk_ref, 16) == 0 &&
+    /* 3.5 : clé de session AES-GCM (IV = nonce local[0:12]) et son étiquette. */
+    static const uint8_t sk35_ref[16] = {
+        0xed, 0x2f, 0xd4, 0x0d, 0x0e, 0x64, 0x2b, 0x26, 0xf8, 0x36, 0x17, 0x0a, 0xd0, 0x8b, 0xa0, 0x3d,
+    };
+    static const uint8_t tag35_ref[16] = {
+        0x6e, 0x9a, 0xb7, 0xf2, 0xbc, 0x80, 0x74, 0x91, 0xaf, 0x95, 0x55, 0x34, 0x59, 0x23, 0x53, 0x9f,
+    };
+    uint8_t sk[16], mac[32], back[16], x[16], tag[16];
+    bool ok = tuya_session_key(TUYA_V34, key, ln, rn, &k_crypto, sk) == 0 && memcmp(sk, sk_ref, 16) == 0 &&
               psa_aes_ecb(key, true, sk, 16, back) == 0 && back[0] == (ln[0] ^ rn[0]) &&
               psa_hmac(key, ln, 16, mac) == 0 && memcmp(mac, mac_ref, 32) == 0;
-    ESP_LOGI(TAG, "auto-test AES-ECB / HMAC-SHA256 : %s", ok ? "OK" : "ÉCHEC");
+    for (int i = 0; i < 16; i++) {
+        x[i] = ln[i] ^ rn[i];
+    }
+    bool gcm = psa_gcm(key, false, ln, NULL, 0, x, 16, sk, tag) == 0 && memcmp(sk, sk35_ref, 16) == 0 &&
+               memcmp(tag, tag35_ref, 16) == 0 && psa_gcm(key, true, ln, NULL, 0, sk, 16, back, tag) == 0 &&
+               memcmp(back, x, 16) == 0;
+    tag[0] ^= 1;
+    gcm = gcm && psa_gcm(key, true, ln, NULL, 0, sk, 16, back, tag) != 0;     /* étiquette fausse refusée */
+    ESP_LOGI(TAG, "auto-test AES-ECB / HMAC-SHA256 : %s, AES-GCM : %s", ok ? "OK" : "ÉCHEC", gcm ? "OK" : "ÉCHEC");
+    ok = ok && gcm;
     return ok;
 }
 
@@ -352,7 +438,7 @@ esp_err_t drv_tuya_set(const cfg_t *cfg, bool on)
     if (!configured(cfg) || !crypto_ready()) {
         return ESP_ERR_INVALID_STATE;
     }
-    tuya_ver_t v = cfg->tuya.version == 34 ? TUYA_V34 : TUYA_V33;
+    tuya_ver_t v = cfg_version(cfg);
     uint8_t key[TUYA_KEY_LEN];
     esp_err_t err;
     int s = open_session(cfg, v, key, &err);
@@ -361,7 +447,7 @@ esp_err_t drv_tuya_set(const cfg_t *cfg, bool on)
     }
     char json[200];
     int n = tuya_control_json(v, cfg->tuya.dev_id, (uint32_t)time(NULL), cfg->tuya.dp_switch, on, json, sizeof(json));
-    uint32_t cmd = v == TUYA_V34 ? TUYA_CMD_CONTROL_NEW : TUYA_CMD_CONTROL;
+    uint32_t cmd = v == TUYA_V33 ? TUYA_CMD_CONTROL : TUYA_CMD_CONTROL_NEW;
     err = n < 0 ? ESP_ERR_INVALID_SIZE
                 : send_cmd(s, v, cmd, (const uint8_t *)json, (size_t)n, key, v == TUYA_V34 ? key : NULL);
     close(s);

@@ -25,9 +25,14 @@
 #define TUYA_CMD_CONTROL_NEW    0x0D
 #define TUYA_CMD_DP_QUERY_NEW   0x10
 
+#define TUYA_HDR6699_LEN        18
+#define TUYA_IV_LEN             12
+#define TUYA_TAG_LEN            16
+
 typedef enum {
     TUYA_V33 = 33,
     TUYA_V34 = 34,
+    TUYA_V35 = 35,      /* trames 6699, AES-GCM (vérifié sur l'appareil de la maison le 2026-11-05) */
 } tuya_ver_t;
 
 typedef struct {
@@ -35,6 +40,10 @@ typedef struct {
     int (*aes_ecb)(const uint8_t key[TUYA_KEY_LEN], bool decrypt, const uint8_t *in, size_t len, uint8_t *out);
     /* HMAC-SHA256. Retourne 0 si OK. */
     int (*hmac_sha256)(const uint8_t key[TUYA_KEY_LEN], const uint8_t *data, size_t len, uint8_t out[TUYA_HMAC_LEN]);
+    /* AES-128-GCM (3.5). Chiffrement : écrit tag ; déchiffrement : vérifie tag, −1 si incorrect. */
+    int (*aes_gcm)(const uint8_t key[TUYA_KEY_LEN], bool decrypt, const uint8_t iv[TUYA_IV_LEN],
+                   const uint8_t *aad, size_t aad_len, const uint8_t *in, size_t len, uint8_t *out,
+                   uint8_t tag[TUYA_TAG_LEN]);
 } tuya_crypto_t;
 
 typedef struct {
@@ -72,7 +81,20 @@ int tuya_decode_payload(tuya_ver_t v, const uint8_t *payload, size_t len, const 
 int tuya_query_json(tuya_ver_t v, const char *dev_id, uint32_t t, char *out, size_t cap);
 int tuya_control_json(tuya_ver_t v, const char *dev_id, uint32_t t, unsigned dp, bool on, char *out, size_t cap);
 
-/* 3.4 : clé de session = AES-ECB(clé locale, nonce local XOR nonce distant). */
-int tuya_session_key(const uint8_t key[TUYA_KEY_LEN], const uint8_t local_nonce[TUYA_NONCE_LEN],
+/* Clé de session (nonce local XOR nonce distant, chiffré avec la clé locale) :
+ * 3.4 : AES-ECB ; 3.5 : AES-GCM avec IV = 12 premiers octets du nonce local, sans AAD. */
+int tuya_session_key(tuya_ver_t v, const uint8_t key[TUYA_KEY_LEN], const uint8_t local_nonce[TUYA_NONCE_LEN],
                      const uint8_t remote_nonce[TUYA_NONCE_LEN], const tuya_crypto_t *c,
                      uint8_t out[TUYA_KEY_LEN]);
+
+/* ---------- 3.5 : trames 6699 ---------- */
+
+/* En-tête de 18 octets, IV, GCM(raw), étiquette, suffixe ; AAD = en-tête sans le préfixe.
+ * raw : charge utile en clair (en-tête de version compris, voir tuya_encode_payload). */
+int tuya_build_frame_6699(uint32_t seq, uint32_t cmd, const uint8_t *raw, size_t len, const uint8_t key[TUYA_KEY_LEN],
+                          const uint8_t iv[TUYA_IV_LEN], const tuya_crypto_t *c, uint8_t *out, size_t cap);
+
+/* Trame appareil 6699 : déchiffre dans plain ; f->retcode = 4 premiers octets, f->payload pointe après.
+ * −1 si malformée ou si l'étiquette GCM est incorrecte. */
+int tuya_parse_frame_6699(const uint8_t *buf, size_t len, const uint8_t key[TUYA_KEY_LEN], const tuya_crypto_t *c,
+                          tuya_frame_t *f, uint8_t *plain, size_t cap);

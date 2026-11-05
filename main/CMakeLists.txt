@@ -1,6 +1,6 @@
 idf_component_register(SRCS "main.c"
                        PRIV_REQUIRES nvs_flash esp_netif esp_event app_state config net web sysmon
-                                     http_util poll forecast history drv_tuya)
+                                     http_util poll forecast history drv_tuya drv_tongou control)
 
 # Image LittleFS (interface web) générée par tools/build_web.py, flashée avec l'application.
 set(LITTLEFS_IMAGE_DIR "${PROJECT_DIR}/littlefs_image")

@@ -14,6 +14,8 @@
 #include "forecast.h"
 #include "history.h"
 #include "drv_tuya.h"
+#include "drv_tongou.h"
+#include "control.h"
 
 static const char *TAG = "main";
 
@@ -66,8 +68,10 @@ void app_main(void)
     ESP_ERROR_CHECK(sysmon_start());
     if (!net_is_setup_mode()) {
         drv_tuya_selftest();
+        ESP_ERROR_CHECK(drv_tongou_init());
         ESP_ERROR_CHECK(forecast_start());
         ESP_ERROR_CHECK(history_start());
         ESP_ERROR_CHECK(poll_start());
+        ESP_ERROR_CHECK(control_start());
     }
 }

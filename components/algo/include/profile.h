@@ -23,5 +23,9 @@ int profile_day_type(int weekday);
 /* Ignore les valeurs non finies ou négatives. Première mesure d'un créneau : prise telle quelle. */
 bool profile_update(profile_t *p, int day_type, int slot, float wh);
 
-/* Valeur du profil, ou PROFILE_DEFAULT_WH si le créneau est vide. */
+/* Valeur du profil. Créneau jamais mesuré : même créneau de l'autre type de jour, sinon moyenne des
+ * créneaux appris (de ce type de jour d'abord), sinon PROFILE_DEFAULT_WH (profil vide, §9.2). */
 float profile_get(const profile_t *p, int day_type, int slot);
+
+/* Nombre de créneaux (sur 96) ayant au moins une mesure. */
+int profile_learned_slots(const profile_t *p);

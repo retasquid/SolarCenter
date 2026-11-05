@@ -109,10 +109,26 @@ static void test_profile_ema(void)
     TEST_ASSERT_FALSE(profile_update(&p, 0, 10, NAN));
     TEST_ASSERT_FALSE(profile_update(&p, 0, 48, 100.0f));
     TEST_ASSERT_FALSE(profile_update(&p, 2, 0, 100.0f));
-    TEST_ASSERT_EQUAL_FLOAT(PROFILE_DEFAULT_WH, profile_get(&p, 1, 10));
+    /* Créneau du week-end jamais mesuré : celui de la semaine. */
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 210.0f, profile_get(&p, 1, 10));
+    TEST_ASSERT_EQUAL_INT(1, profile_learned_slots(&p));
     TEST_ASSERT_EQUAL_INT(1, profile_day_type(0));
     TEST_ASSERT_EQUAL_INT(0, profile_day_type(3));
     TEST_ASSERT_EQUAL_INT(1, profile_day_type(6));
+}
+
+static void test_profile_fallback_chain(void)
+{
+    profile_t p;
+    profile_init(&p);
+    TEST_ASSERT_EQUAL_FLOAT(PROFILE_DEFAULT_WH, profile_get(&p, 0, 5));     /* profil vide */
+    profile_update(&p, 0, 20, 100.0f);
+    profile_update(&p, 0, 30, 500.0f);
+    profile_update(&p, 1, 40, 900.0f);
+    TEST_ASSERT_EQUAL_FLOAT(100.0f, profile_get(&p, 1, 20));                /* autre type de jour */
+    TEST_ASSERT_EQUAL_FLOAT(300.0f, profile_get(&p, 0, 5));                 /* moyenne semaine (100, 500) */
+    TEST_ASSERT_EQUAL_FLOAT(900.0f, profile_get(&p, 1, 5));                 /* moyenne week-end (900) */
+    TEST_ASSERT_EQUAL_INT(3, profile_learned_slots(&p));
 }
 
 int main(void)
@@ -124,5 +140,6 @@ int main(void)
     RUN_TEST(test_resets_on_divergence);
     RUN_TEST(test_not_ready_before_96_samples);
     RUN_TEST(test_profile_ema);
+    RUN_TEST(test_profile_fallback_chain);
     return UNITY_END();
 }

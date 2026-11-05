@@ -78,7 +78,8 @@ esp_err_t history_foreach_month(hist_month_cb_t cb, void *ctx);
 
 bool history_predict(uint32_t slot_ts, hist_pred_t *out);
 
-void history_model_info(rls_t *pv, rls_t *base);
+/* Copie des modèles ; profile_slots = créneaux du profil déjà mesurés (sur 96). */
+void history_model_info(rls_t *pv, rls_t *base, int *profile_slots);
 
 esp_err_t history_reset_models(bool pv, bool base, bool profile);
 

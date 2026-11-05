@@ -1176,7 +1176,14 @@ async function loadForecast() {
     ['Apprentissage', mdl.ready ? `${mdl.samples} échantillons` : `rodage : ${mdl.samples} / 96 (repli utilisé)`, mdl.ready ? '' : 'dim'],
   ];
   fillDl('fc-pv-q', quality(fc.pv, sumKwh(pv)));
-  fillDl('fc-base-q', quality(fc.base, sumKwh(rows.map((r) => W(r[6])))));
+  const baseQ = quality(fc.base, sumKwh(rows.map((r) => W(r[6]))));
+  if (fc.profile_total) {
+    const p = fc.profile_slots;
+    baseQ.push(['Profil appris', p === 0
+      ? 'aucun créneau mesuré : valeur par défaut 600 W'
+      : `${p} / ${fc.profile_total} créneaux (semaine et week-end)`, p < fc.profile_total ? 'dim' : '']);
+  }
+  fillDl('fc-base-q', baseQ);
 }
 
 // ---------- Historique ----------

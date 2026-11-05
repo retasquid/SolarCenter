@@ -7,6 +7,7 @@
 #include "forecast.h"
 #include "history.h"
 #include "stats.h"
+#include "profile.h"
 #include "web_priv.h"
 
 static const char *TAG = "web";
@@ -159,7 +160,8 @@ static esp_err_t forecast_get_handler(httpd_req_t *req)
     uint32_t last = slot_start(now) - HIST_SLOT_S;
     history_foreach_slot(last - (MAE_DAYS * 48 - 1) * HIST_SLOT_S, last, mae_slot, &mae);
     static rls_t pv, base;
-    history_model_info(&pv, &base);
+    int profile_slots = 0;
+    history_model_info(&pv, &base, &profile_slots);
 
     jw_begin(&s_jw, req);
     jw_printf(&s_jw, "{\"ok\":%s,\"fetched\":%lld,\"coords\":%s,\"midnight\":%lu,\"slot_s\":%d,",
@@ -189,7 +191,7 @@ static esp_err_t forecast_get_handler(httpd_req_t *req)
     emit_model(&s_jw, "pv", &pv, mae.pv_err, mae.pv_n);
     jw_printf(&s_jw, ",");
     emit_model(&s_jw, "base", &base, mae.base_err, mae.base_n);
-    jw_printf(&s_jw, "}");
+    jw_printf(&s_jw, ",\"profile_slots\":%d,\"profile_total\":%d}", profile_slots, PROFILE_SLOTS * PROFILE_DAY_TYPES);
     return jw_end(&s_jw);
 }
 

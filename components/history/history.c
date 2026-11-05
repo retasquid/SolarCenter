@@ -28,6 +28,7 @@ static const char *TAG = "history";
 
 #define NVS_NS              "models"
 #define MODELS_VERSION      1
+#define MODELS_SAVE_SLOTS   4           /* sauvegarde NVS toutes les 2 h */
 
 #define HIST_STACK          6144
 #define HIST_PRIO           2
@@ -482,10 +483,16 @@ static void finalize_slot(uint32_t start, const energy_acc_t *acc, uint8_t soc)
     today = s_today;
     xSemaphoreGive(s_mtx);
 
+    /* Sauvegarde des modèles : à chaque journée close et toutes les 2 h, pour qu'un redémarrage ne
+     * perde pas l'apprentissage du jour (le §9.2 ne prévoit qu'une sauvegarde quotidienne). */
+    static int slots_since_save;
+    if (close || ++slots_since_save >= MODELS_SAVE_SLOTS) {
+        slots_since_save = 0;
+        models_save();
+    }
     if (close) {
         write_day(closed_date, &closed);
         add_to_month(closed_date, &closed);
-        models_save();
         ESP_LOGI(TAG, "journée %lu close : PV %.2f kWh, import %.2f kWh, export %.2f kWh",
                  (unsigned long)closed_date, closed.e_pv / 1000.0f, closed.e_import / 1000.0f,
                  closed.e_export / 1000.0f);
@@ -652,11 +659,12 @@ esp_err_t history_foreach_month(hist_month_cb_t cb, void *ctx)
     return ESP_OK;
 }
 
-void history_model_info(rls_t *pv, rls_t *base)
+void history_model_info(rls_t *pv, rls_t *base, int *profile_slots)
 {
     xSemaphoreTake(s_model_mtx, portMAX_DELAY);
     *pv = s_rls_pv;
     *base = s_rls_base;
+    *profile_slots = profile_learned_slots(&s_profile);
     xSemaphoreGive(s_model_mtx);
 }
 

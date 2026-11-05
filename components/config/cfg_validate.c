@@ -250,7 +250,7 @@ static bool is_alnum(char ch)
 static const char *validate_tuya(const cfg_tuya_t *t)
 {
     TRY(t->type <= CE_DEV_TUYA, "dev.tongou_type");
-    TRY(t->version == 33 || t->version == 34, "dev.tuya_version");
+    TRY(t->version == 33 || t->version == 34 || t->version == 35, "dev.tuya_version");
     TRY(t->dp_switch >= 1, "dev.tuya_dp_switch");
     TRY(t->dp_power >= 1, "dev.tuya_dp_power");
     TRY(t->power_div >= 1 && t->power_div <= 1000, "dev.tuya_power_div");

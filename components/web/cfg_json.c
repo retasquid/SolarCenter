@@ -113,7 +113,8 @@ cJSON *cfg_to_json(const cfg_t *c)
                                               ? shelly_modes[c->shelly.mode] : "auto");
     cJSON_AddNumberToObject(d, "shelly_channel", c->shelly.channel);
     cJSON_AddStringToObject(d, "tongou_type", c->tuya.type == CE_DEV_TUYA ? "tuya" : "openbeken");
-    cJSON_AddStringToObject(d, "tuya_version", c->tuya.version == 34 ? "3.4" : "3.3");
+    cJSON_AddStringToObject(d, "tuya_version",
+                            c->tuya.version == 35 ? "3.5" : (c->tuya.version == 34 ? "3.4" : "3.3"));
     cJSON_AddStringToObject(d, "tuya_id", c->tuya.dev_id);
     add_secret(d, "tuya_key", c->tuya.local_key);
     cJSON_AddNumberToObject(d, "tuya_dp_switch", c->tuya.dp_switch);
@@ -434,6 +435,8 @@ static const char *tuya_from_json(const cJSON *o, cfg_tuya_t *t)
             t->version = 33;
         } else if (strcmp(ver->valuestring, "3.4") == 0) {
             t->version = 34;
+        } else if (strcmp(ver->valuestring, "3.5") == 0) {
+            t->version = 35;
         } else {
             return "dev.tuya_version";
         }

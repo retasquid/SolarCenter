@@ -569,7 +569,7 @@ const SCHEMA = [
     { k: 'zendure_sn', l: 'N° de série SolarFlow', t: 'text', max: 31 },
     { k: 'tongou_ip', l: 'IP Tongou', t: 'ip' },
     { k: 'tongou_type', l: 'Firmware du Tongou', t: 'select', opts: [['openbeken', 'OpenBeken (API HTTP)'], ['tuya', 'Tuya d\'origine (protocole local chiffré)']] },
-    { k: 'tuya_version', l: 'Version du protocole Tuya', t: 'select', opts: [['3.3', '3.3'], ['3.4', '3.4']] },
+    { k: 'tuya_version', l: 'Version du protocole Tuya', t: 'select', opts: [['3.3', '3.3'], ['3.4', '3.4'], ['3.5', '3.5']] },
     { k: 'tuya_id', l: 'Identifiant Tuya (device id)', t: 'text', max: 23, pattern: '[A-Za-z0-9]*' },
     { k: 'tuya_key', l: 'Clé locale Tuya', t: 'secret', help: '16 caractères. Vide = conserver.' },
     { k: 'tuya_dp_switch', l: 'DP du relais', t: 'int', min: 1, max: 255 },

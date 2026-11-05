@@ -30,3 +30,6 @@ esp_err_t http_util_init(void);
  *  ESP_ERR_INVALID_RESPONSE  : statut ≠ 200 (*status renseigné)
  *  autre                     : erreur réseau ou TLS */
 esp_err_t http_get(const http_req_t *req, char *buf, size_t cap, size_t *len, int *status);
+
+/* POST d'un corps JSON, mêmes règles et codes de retour que http_get. */
+esp_err_t http_post_json(const http_req_t *req, const char *body, char *buf, size_t cap, size_t *len, int *status);

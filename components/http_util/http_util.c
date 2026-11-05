@@ -25,11 +25,13 @@ esp_err_t http_util_init(void)
     return g_tls_mutex != NULL ? ESP_OK : ESP_FAIL;
 }
 
-static esp_err_t get_once(const http_req_t *req, char *buf, size_t cap, size_t *len, int *status)
+/* body NULL : GET ; sinon POST JSON. */
+static esp_err_t request_once(const http_req_t *req, const char *body, char *buf, size_t cap, size_t *len,
+                              int *status)
 {
     esp_http_client_config_t c = {
         .url = req->url,
-        .method = HTTP_METHOD_GET,
+        .method = body ? HTTP_METHOD_POST : HTTP_METHOD_GET,
         .timeout_ms = req->timeout_ms > 0 ? req->timeout_ms : HTTP_TIMEOUT_MS,
         .buffer_size = HTTP_RX_BUF,
         .buffer_size_tx = HTTP_TX_BUF,
@@ -55,8 +57,15 @@ static esp_err_t get_once(const http_req_t *req, char *buf, size_t cap, size_t *
         err = (n > 0 && (size_t)n < sizeof(auth)) ? esp_http_client_set_header(h, "Authorization", auth)
                                                   : ESP_ERR_INVALID_SIZE;
     }
+    int body_len = body ? (int)strlen(body) : 0;
+    if (err == ESP_OK && body) {
+        err = esp_http_client_set_header(h, "Content-Type", "application/json");
+    }
     if (err == ESP_OK) {
-        err = esp_http_client_open(h, 0);
+        err = esp_http_client_open(h, body_len);
+    }
+    if (err == ESP_OK && body_len > 0 && esp_http_client_write(h, body, body_len) != body_len) {
+        err = ESP_FAIL;
     }
     if (err == ESP_OK && esp_http_client_fetch_headers(h) < 0) {
         err = ESP_FAIL;
@@ -97,7 +106,7 @@ static esp_err_t get_once(const http_req_t *req, char *buf, size_t cap, size_t *
     return err;
 }
 
-esp_err_t http_get(const http_req_t *req, char *buf, size_t cap, size_t *len, int *status)
+static esp_err_t request(const http_req_t *req, const char *body, char *buf, size_t cap, size_t *len, int *status)
 {
     *len = 0;
     *status = 0;
@@ -112,7 +121,7 @@ esp_err_t http_get(const http_req_t *req, char *buf, size_t cap, size_t *len, in
 
     esp_err_t err = ESP_FAIL;
     for (int i = 0; i < HTTP_ATTEMPTS; i++) {
-        err = get_once(req, buf, cap, len, status);
+        err = request_once(req, body, buf, cap, len, status);
         /* Une réponse complète (même en erreur HTTP) ne se réessaie pas. */
         if (err == ESP_OK || err == ESP_ERR_INVALID_SIZE || err == ESP_ERR_INVALID_RESPONSE) {
             break;
@@ -123,7 +132,17 @@ esp_err_t http_get(const http_req_t *req, char *buf, size_t cap, size_t *len, in
         xSemaphoreGive(g_tls_mutex);
     }
     if (err != ESP_OK) {
-        ESP_LOGD(TAG, "GET %s : %s (HTTP %d)", req->url, esp_err_to_name(err), *status);
+        ESP_LOGD(TAG, "%s %s : %s (HTTP %d)", body ? "POST" : "GET", req->url, esp_err_to_name(err), *status);
     }
     return err;
+}
+
+esp_err_t http_get(const http_req_t *req, char *buf, size_t cap, size_t *len, int *status)
+{
+    return request(req, NULL, buf, cap, len, status);
+}
+
+esp_err_t http_post_json(const http_req_t *req, const char *body, char *buf, size_t cap, size_t *len, int *status)
+{
+    return request(req, body, buf, cap, len, status);
 }

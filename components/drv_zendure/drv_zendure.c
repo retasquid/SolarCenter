@@ -1,3 +1,4 @@
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include "esp_log.h"
@@ -77,6 +78,65 @@ esp_err_t drv_zendure_parse(const char *json, size_t len, zendure_reading_t *out
     }
     cJSON_Delete(root);
     return ok ? ESP_OK : ESP_ERR_INVALID_RESPONSE;
+}
+
+/* ---------- Écriture (§8.3) ---------- */
+
+#define ZENDURE_WRITE_FMT   "http://%s/properties/write"
+/* TODO(verify) : sémantique de smartMode (le CLAUDE.md l'indique pour limiter l'usure de la flash de la
+ * batterie lors d'écritures fréquentes ; le champ existe dans properties/report, valeur 1 constatée). */
+#define ZK_SMART_MODE       "smartMode"
+#define ZENDURE_SMART_MODE  1
+#define ZENDURE_AC_CHARGE   1
+#define ZENDURE_AC_DISCHARGE 2
+
+static esp_err_t write_props(const cfg_t *cfg, const char *props)
+{
+    if (cfg->dev.zendure_sn[0] == '\0') {
+        ESP_LOGW(TAG, "numéro de série non renseigné : écriture impossible");
+        return ESP_ERR_INVALID_STATE;
+    }
+    char url[64];
+    static char body[192];
+    snprintf(url, sizeof(url), ZENDURE_WRITE_FMT, cfg->dev.zendure_ip);
+    int n = snprintf(body, sizeof(body), "{\"sn\":\"%s\",\"properties\":{%s}}", cfg->dev.zendure_sn, props);
+    if (n < 0 || (size_t)n >= sizeof(body)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    const http_req_t req = { .url = url, .tls = HTTP_TLS_NONE };
+    size_t len;
+    int status;
+    static char resp[512];      /* distinct de s_buf : l'écriture (task_act) et la lecture (task_poll) sont concurrentes */
+    esp_err_t err = http_post_json(&req, body, resp, sizeof(resp), &len, &status);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "écriture %s : %s (HTTP %d)", props, esp_err_to_name(err), status);
+    }
+    return err;
+}
+
+esp_err_t drv_zendure_set_power(const cfg_t *cfg, float watts)
+{
+    char props[96];
+    int w = (int)lroundf(fabsf(watts));
+    if (w == 0) {
+        snprintf(props, sizeof(props), "\"inputLimit\":0,\"outputLimit\":0,\"%s\":%d", ZK_SMART_MODE,
+                 ZENDURE_SMART_MODE);
+    } else if (watts > 0.0f) {
+        snprintf(props, sizeof(props), "\"acMode\":%d,\"outputLimit\":%d,\"%s\":%d", ZENDURE_AC_DISCHARGE, w,
+                 ZK_SMART_MODE, ZENDURE_SMART_MODE);
+    } else {
+        snprintf(props, sizeof(props), "\"acMode\":%d,\"inputLimit\":%d,\"%s\":%d", ZENDURE_AC_CHARGE, w,
+                 ZK_SMART_MODE, ZENDURE_SMART_MODE);
+    }
+    return write_props(cfg, props);
+}
+
+esp_err_t drv_zendure_set_soc_limits(const cfg_t *cfg)
+{
+    char props[64];
+    /* ‰ : 1000 = 100 % (§8.3). */
+    snprintf(props, sizeof(props), "\"minSoc\":%d,\"socSet\":%d", cfg->batt.soc_min * 10, cfg->batt.soc_max * 10);
+    return write_props(cfg, props);
 }
 
 esp_err_t drv_zendure_poll(const cfg_t *cfg, zendure_reading_t *out)

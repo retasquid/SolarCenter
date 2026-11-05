@@ -1,5 +1,7 @@
 #include <stdio.h>
 #include <string.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "esp_log.h"
 #include "cJSON.h"
 #include "http_util.h"
@@ -75,7 +77,55 @@ static esp_err_t get(const char *fmt, const char *ip, size_t *len)
     return err;
 }
 
+#define TONGOU_URL_ON       "http://%s/cm?cmnd=POWER%%20ON"
+#define TONGOU_URL_OFF      "http://%s/cm?cmnd=POWER%%20OFF"
+
+/* Lecture (task_poll) et commande (task_act) se partagent les tampons du pilote, et l'appareil n'accepte
+ * que peu de connexions simultanées : un seul échange à la fois. */
+static StaticSemaphore_t s_lock_buf;
+static SemaphoreHandle_t s_lock;
+#define TONGOU_LOCK_MS      10000
+
+esp_err_t drv_tongou_init(void)
+{
+    s_lock = xSemaphoreCreateMutexStatic(&s_lock_buf);
+    return s_lock != NULL ? ESP_OK : ESP_FAIL;
+}
+
+static bool lock(void)
+{
+    return s_lock != NULL && xSemaphoreTake(s_lock, pdMS_TO_TICKS(TONGOU_LOCK_MS)) == pdTRUE;
+}
+
+esp_err_t drv_tongou_set(const cfg_t *cfg, bool on)
+{
+    if (!lock()) {
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_err_t err;
+    if (cfg->tuya.type == CE_DEV_TUYA) {
+        err = drv_tuya_set(cfg, on);
+    } else {
+        size_t len;
+        err = get(on ? TONGOU_URL_ON : TONGOU_URL_OFF, cfg->dev.tongou_ip, &len);
+    }
+    xSemaphoreGive(s_lock);
+    return err;
+}
+
+static esp_err_t poll_locked(const cfg_t *cfg, tongou_reading_t *out);
+
 esp_err_t drv_tongou_poll(const cfg_t *cfg, tongou_reading_t *out)
+{
+    if (!lock()) {
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_err_t err = poll_locked(cfg, out);
+    xSemaphoreGive(s_lock);
+    return err;
+}
+
+static esp_err_t poll_locked(const cfg_t *cfg, tongou_reading_t *out)
 {
     if (cfg->tuya.type == CE_DEV_TUYA) {
         tuya_reading_t r;

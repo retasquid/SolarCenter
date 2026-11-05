@@ -24,3 +24,9 @@ typedef struct {
 esp_err_t drv_zendure_poll(const cfg_t *cfg, zendure_reading_t *out);
 
 esp_err_t drv_zendure_parse(const char *json, size_t len, zendure_reading_t *out);
+
+/* Consigne côté AC : > 0 décharge (acMode 2, outputLimit), < 0 charge (acMode 1, inputLimit), 0 repos. */
+esp_err_t drv_zendure_set_power(const cfg_t *cfg, float watts);
+
+/* minSoc et socSet depuis la config (au démarrage du pilotage, §8.3). */
+esp_err_t drv_zendure_set_soc_limits(const cfg_t *cfg);

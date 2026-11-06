@@ -152,6 +152,15 @@
       <article class="card"><h2>Matériel</h2><dl id="sys-hw"></dl></article>
       <article class="card"><h2>Configuration</h2><dl id="sys-cfg"></dl></article>
     </div>
+    <article class="card">
+      <h2>Mise à jour</h2>
+      <p class="hint">Sans câble et sans effacer l'historique. Interface : fichiers <code>.gz</code> de <code>littlefs_image/www/</code> (après <code>tools/build_web.py</code>). Firmware : <code>build/solar_center.bin</code> ; la carte met les appareils au repos, redémarre, et revient seule à l'ancien firmware si le nouveau ne tient pas 2 minutes.</p>
+      <div class="field"><label for="up-www">Fichiers de l'interface</label><input type="file" id="up-www" accept=".gz" multiple></div>
+      <div class="field"><label for="up-fw">Firmware</label><input type="file" id="up-fw" accept=".bin"></div>
+      <div class="field"><label for="up-pass">Mot de passe administrateur</label><input type="password" id="up-pass" autocomplete="current-password"></div>
+      <div class="field"><button type="button" id="up-go" class="btn">Envoyer</button></div>
+      <p id="up-msg" aria-live="polite"></p>
+    </article>
     <article class="card log-card">
       <h2>Journal des décisions</h2>
       <p class="hint">Une ligne à chaque changement de décision, et au moins toutes les 5 minutes (200 lignes en mémoire).</p>

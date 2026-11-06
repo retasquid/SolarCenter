@@ -7,6 +7,7 @@
 #include "esp_flash.h"
 #include "esp_app_desc.h"
 #include "esp_system.h"
+#include "esp_ota_ops.h"
 #include "app_state.h"
 #include "config.h"
 #include "net.h"
@@ -21,12 +22,10 @@ static const char *TAG = "web";
 #define HEAP_WARN_BYTES         (40 * 1024)
 #define NTP_LOST_ALERT_S        (24 * 3600)
 #define CHIP_REV_SECURE_BOOT_V2 300
-#define SETUP_REBOOT_DELAY_US   (1500 * 1000)
 
 /* Tampons statiques : les gestionnaires s'exécutent tous dans l'unique tâche httpd. */
 static char s_body[BODY_MAX];
 static cfg_t s_cfg;
-static esp_timer_handle_t s_reboot_timer;
 
 /* ---------- GET /api/system ---------- */
 
@@ -49,6 +48,14 @@ static esp_err_t system_get(httpd_req_t *req)
         return web_send_json(req, NULL);
     }
     cJSON_AddStringToObject(r, "version", app->version);
+    char build[24];
+    snprintf(build, sizeof(build), "%.11s %.5s", app->date, app->time);
+    cJSON_AddStringToObject(r, "build", build);
+    const esp_partition_t *run = esp_ota_get_running_partition();
+    esp_ota_img_states_t ota_state;
+    cJSON_AddStringToObject(r, "partition", run != NULL ? run->label : "?");
+    cJSON_AddBoolToObject(r, "pending_verify", run != NULL && esp_ota_get_state_partition(run, &ota_state) == ESP_OK &&
+                                               ota_state == ESP_OTA_IMG_PENDING_VERIFY);
     cJSON_AddStringToObject(r, "idf", app->idf_ver);
     cJSON_AddNumberToObject(r, "uptime_s", (double)(esp_timer_get_time() / 1000000));
     cJSON_AddNumberToObject(r, "reset_reason", (int)esp_reset_reason());
@@ -184,19 +191,12 @@ static esp_err_t config_post_handler(httpd_req_t *req)
     }
     if (saved && reboot) {
         ESP_LOGI(TAG, "WiFi ou nom réseau modifié : redémarrage");
-        if (esp_timer_start_once(s_reboot_timer, SETUP_REBOOT_DELAY_US) != ESP_OK) {
-            ESP_LOGE(TAG, "minuterie de redémarrage indisponible");
-        }
+        sysmon_request_restart("nouvelle configuration réseau");
     }
     return err;
 }
 
 /* ---------- POST /api/setup (portail) ---------- */
-
-static void on_reboot_timer(void *arg)
-{
-    sysmon_restart("nouvelle configuration réseau");
-}
 
 /* Corps : {"wifi_ssid","wifi_pass","admin_pass","hostname"}. Sans mot de passe au premier
  * démarrage, ensuite le mot de passe administrateur actuel est exigé. */
@@ -237,18 +237,13 @@ static esp_err_t setup_post_handler(httpd_req_t *req)
     err = save_and_reply(req, true, &saved);
     if (saved) {
         ESP_LOGI(TAG, "portail : configuration enregistrée, redémarrage");
-        if (esp_timer_start_once(s_reboot_timer, SETUP_REBOOT_DELAY_US) != ESP_OK) {
-            ESP_LOGE(TAG, "minuterie de redémarrage indisponible");
-        }
+        sysmon_request_restart("nouvelle configuration réseau");
     }
     return err;
 }
 
 esp_err_t api_register(httpd_handle_t srv)
 {
-    const esp_timer_create_args_t targs = { .callback = on_reboot_timer, .name = "setup_reboot" };
-    ESP_RETURN_ON_ERROR(esp_timer_create(&targs, &s_reboot_timer), TAG, "timer");
-
     const httpd_uri_t routes[] = {
         { .uri = "/api/system", .method = HTTP_GET,  .handler = system_get },
         { .uri = "/api/state",  .method = HTTP_GET,  .handler = state_get },
@@ -260,5 +255,6 @@ esp_err_t api_register(httpd_handle_t srv)
         ESP_RETURN_ON_ERROR(httpd_register_uri_handler(srv, &routes[i]), TAG, "%s", routes[i].uri);
     }
     ESP_RETURN_ON_ERROR(api_hist_register(srv), TAG, "historique");
+    ESP_RETURN_ON_ERROR(api_ota_register(srv), TAG, "OTA");
     return api_ctl_register(srv);
 }

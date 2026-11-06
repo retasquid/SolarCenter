@@ -453,7 +453,8 @@ function renderSystem(s) {
   renderAlerts(s);
   const tk = tokenInfo(s);
   fillDl('sys-fw', [
-    ['Version', s.version],
+    ['Version', s.version + (s.build ? ` (${s.build})` : '')],
+    ['Partition', s.partition || '—', s.pending_verify ? 'warn' : ''],
     ['ESP-IDF', s.idf],
     ['Fonctionnement', duration(s.uptime_s)],
     ['Dernier redémarrage', RESET_REASONS[s.reset_reason] || `code ${s.reset_reason}`, s.reset_reason === 9 ? 'warn' : ''],
@@ -1451,7 +1452,79 @@ async function loadLog() {
   }));
 }
 
+// ---------- Mise à jour (OTA) ----------
+
+const UPLOAD_TIMEOUT_MS = 180000;
+
+async function upload(url, file, pass) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), UPLOAD_TIMEOUT_MS);
+  try {
+    const r = await fetch(url, {
+      method: 'POST', body: file, signal: ctl.signal,
+      headers: { 'Content-Type': 'application/octet-stream', 'X-Admin-Password': pass },
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(r.status === 401 ? 'mot de passe administrateur incorrect' : (j.error || 'HTTP ' + r.status));
+    return j;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Après le firmware : attend que la carte réponde de nouveau, puis recharge la page.
+async function waitReboot(msg) {
+  await new Promise((r) => setTimeout(r, 5000));
+  for (let i = 0; i < 45; i++) {
+    try {
+      const s = await getJson('/api/system');
+      msg(`Carte revenue (version ${s.version}). Rechargement…`, false);
+      setTimeout(() => location.reload(), 1500);
+      return;
+    } catch (e) {
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+  msg('La carte ne répond plus. Si le nouveau firmware plante, elle revient seule à l\'ancien.', true);
+}
+
+async function runUpdate() {
+  const out = $('#up-msg');
+  const msg = (t, bad) => { out.textContent = t; out.className = bad ? 'bad' : 'good'; };
+  const www = [...$('#up-www').files];
+  const fw = $('#up-fw').files[0];
+  const pass = $('#up-pass').value;
+  if (!www.length && !fw) { msg('Choisissez des fichiers d\'interface, un firmware, ou les deux.', true); return; }
+  if (!pass) { msg('Saisissez le mot de passe administrateur.', true); return; }
+  const bad = www.find((f) => !/^[A-Za-z0-9_-][A-Za-z0-9._-]*\.gz$/.test(f.name));
+  if (bad) { msg(`${bad.name} : fichier .gz de littlefs_image/www/ attendu.`, true); return; }
+  if (fw && !fw.name.endsWith('.bin')) { msg('Firmware : fichier .bin attendu.', true); return; }
+  if (fw && !confirm('Envoyer le firmware ? La carte mettra les appareils au repos et redémarrera.')) return;
+  $('#up-go').disabled = true;
+  try {
+    for (const f of www) {
+      msg(`Interface : ${f.name}…`, false);
+      await upload('/api/www?file=' + encodeURIComponent(f.name), f, pass);
+    }
+    if (fw) {
+      msg(`Firmware : envoi de ${ko(fw.size)} et écriture en flash…`, false);
+      await upload('/api/ota', fw, pass);
+      msg('Firmware écrit. Redémarrage…', false);
+      await waitReboot(msg);
+    } else {
+      msg(`${www.length} fichier(s) d'interface mis à jour. Rechargez la page pour les utiliser.`, false);
+    }
+  } catch (e) {
+    msg('Échec : ' + e.message, true);
+  } finally {
+    $('#up-go').disabled = false;
+    $('#up-pass').value = '';
+  }
+}
+
 // ---------- Démarrage ----------
+
+$('#up-go').addEventListener('click', runUpdate);
 
 segment('.flow-card .seg', 'unit', (u) => {
   unit = u;

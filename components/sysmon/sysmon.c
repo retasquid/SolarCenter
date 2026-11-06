@@ -7,6 +7,8 @@
 #include "esp_app_desc.h"
 #include "esp_heap_caps.h"
 #include "esp_task_wdt.h"
+#include "esp_timer.h"
+#include "esp_ota_ops.h"
 #include "app_state.h"
 #include "net.h"
 #include "sysmon.h"
@@ -24,9 +26,35 @@ static const char *TAG = "sysmon";
 #define SYSMON_PRIO             1
 #define SYSMON_CORE             0
 
+#define RESTART_DELAY_MS        1500    /* laisse partir la réponse HTTP */
+#define OTA_VALID_AFTER_US      (120LL * 1000000)
+
 static sysmon_safe_hook_t s_safe_hook;
 static StaticTask_t s_task_buf;
 static StackType_t s_task_stack[SYSMON_STACK];
+static TaskHandle_t s_task;
+static const char *volatile s_restart_reason;
+static bool s_ota_checked;
+
+/* Nouvelle image OTA : validée après 2 min sans plantage, sinon le chargeur revient à l'ancienne. */
+static void ota_check_valid(void)
+{
+    if (s_ota_checked || esp_timer_get_time() < OTA_VALID_AFTER_US) {
+        return;
+    }
+    s_ota_checked = true;
+    esp_ota_img_states_t state;
+    const esp_partition_t *run = esp_ota_get_running_partition();
+    if (run == NULL || esp_ota_get_state_partition(run, &state) != ESP_OK || state != ESP_OTA_IMG_PENDING_VERIFY) {
+        return;
+    }
+    esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "nouveau firmware validé (%s)", run->label);
+    } else {
+        ESP_LOGE(TAG, "validation du firmware impossible : %s", esp_err_to_name(err));
+    }
+}
 
 void sysmon_log_boot_info(void)
 {
@@ -86,16 +114,30 @@ static void sysmon_task(void *arg)
             }
         }
 
+        ota_check_valid();
         esp_task_wdt_reset();
-        vTaskDelay(pdMS_TO_TICKS(SYSMON_PERIOD_MS));
+        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(SYSMON_PERIOD_MS)) != 0 && s_restart_reason != NULL) {
+            vTaskDelay(pdMS_TO_TICKS(RESTART_DELAY_MS));
+            sysmon_restart(s_restart_reason);
+        }
     }
 }
 
 esp_err_t sysmon_start(void)
 {
-    TaskHandle_t h = xTaskCreateStaticPinnedToCore(sysmon_task, "task_sys", SYSMON_STACK, NULL,
-                                                   SYSMON_PRIO, s_task_stack, &s_task_buf, SYSMON_CORE);
-    return h != NULL ? ESP_OK : ESP_FAIL;
+    s_task = xTaskCreateStaticPinnedToCore(sysmon_task, "task_sys", SYSMON_STACK, NULL,
+                                           SYSMON_PRIO, s_task_stack, &s_task_buf, SYSMON_CORE);
+    return s_task != NULL ? ESP_OK : ESP_FAIL;
+}
+
+void sysmon_request_restart(const char *reason)
+{
+    s_restart_reason = reason;
+    if (s_task != NULL) {
+        xTaskNotifyGive(s_task);
+    } else {
+        sysmon_restart(reason);
+    }
 }
 
 void sysmon_set_safe_hook(sysmon_safe_hook_t hook)

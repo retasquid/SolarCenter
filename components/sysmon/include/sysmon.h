@@ -15,3 +15,7 @@ void sysmon_set_safe_hook(sysmon_safe_hook_t hook);
 
 /* Redémarrage contrôlé : état de repli des appareils, puis esp_restart(). */
 void sysmon_restart(const char *reason);
+
+/* Même chose depuis task_sys, 1,5 s plus tard (réponse HTTP envoyée, pas d'appel réseau dans httpd).
+ * reason doit rester valide (chaîne littérale). */
+void sysmon_request_restart(const char *reason);

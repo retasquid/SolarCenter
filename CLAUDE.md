@@ -51,8 +51,9 @@ Règles mémoire :
   idf.py set-target esp32
   idf.py menuconfig
   python tools/build_web.py          # minifie et compresse web/ en gzip → littlefs_image/
-  idf.py build flash monitor         # flashe aussi l'image LittleFS (FLASH_IN_PROJECT)
-  idf.py storage-flash               # ne flashe que la partition LittleFS
+  idf.py build flash monitor         # firmware seul : l'historique (LittleFS) est conservé
+  python tools/ota.py <ip>           # par le réseau : interface (/api/www) puis firmware (/api/ota)
+  idf.py storage-flash               # réécrit toute la partition LittleFS : EFFACE l'historique
   cmake -S test/host -B build-host -G Ninja -DCMAKE_C_COMPILER=gcc && cmake --build build-host && ctest --test-dir build-host
   ```
 

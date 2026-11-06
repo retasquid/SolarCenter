@@ -264,7 +264,7 @@ esp_err_t web_start(void)
     c.stack_size = 8192;
     c.task_priority = 5;
     c.core_id = 0;
-    c.max_uri_handlers = 16;
+    c.max_uri_handlers = 20;
     c.lru_purge_enable = true;
     c.send_wait_timeout = 2;    /* s ; un client lent ne bloque pas httpd 5 s */
     c.uri_match_fn = httpd_uri_match_wildcard;

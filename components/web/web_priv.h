@@ -36,6 +36,9 @@ cJSON *state_to_json(void);
 /* Historique, prévisions, statistiques, réinitialisation des modèles. */
 esp_err_t api_hist_register(httpd_handle_t srv);
 
+/* Mise à jour du firmware (/api/ota) et des fichiers de l'interface (/api/www). */
+esp_err_t api_ota_register(httpd_handle_t srv);
+
 /* Plan, journal des décisions, forçage du chauffe-eau. */
 esp_err_t api_ctl_register(httpd_handle_t srv);
 

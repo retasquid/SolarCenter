@@ -19,6 +19,7 @@ static const char *TAG = "sysmon";
 #define SYSMON_LOG_PERIOD_MS    60000
 #define HEAP_WARN_BYTES         (40 * 1024)
 #define HEAP_REBOOT_BYTES       (25 * 1024)
+#define HEAP_REBOOT_OTA_BYTES   (12 * 1024)
 #define EXPECTED_FLASH_BYTES    (4 * 1024 * 1024)
 #define CHIP_REV_SECURE_BOOT_V2 300     /* v3.0 */
 
@@ -35,6 +36,12 @@ static StackType_t s_task_stack[SYSMON_STACK];
 static TaskHandle_t s_task;
 static const char *volatile s_restart_reason;
 static bool s_ota_checked;
+static volatile bool s_ota_active;
+
+void sysmon_set_ota_active(bool active)
+{
+    s_ota_active = active;
+}
 
 /* Nouvelle image OTA : validée après 2 min sans plantage, sinon le chargeur revient à l'ancienne. */
 static void ota_check_valid(void)
@@ -97,7 +104,8 @@ static void sysmon_task(void *arg)
         st->rssi = rssi;
         app_state_unlock();
 
-        if (free_b < HEAP_REBOOT_BYTES) {
+        /* Pendant une OTA, c'est l'OTA qui abandonne (28 Ko) : ne pas couper l'écriture en plein milieu. */
+        if (free_b < (s_ota_active ? HEAP_REBOOT_OTA_BYTES : HEAP_REBOOT_BYTES)) {
             ESP_LOGE(TAG, "heap critique : %lu o libres", (unsigned long)free_b);
             sysmon_restart("heap critique");
         }

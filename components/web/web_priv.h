@@ -14,6 +14,7 @@
 #define WEB_404 "404 Not Found"
 #define WEB_413 "413 Payload Too Large"
 #define WEB_500 "500 Internal Server Error"
+#define WEB_503 "503 Service Unavailable"
 
 /* Envoie root en JSON puis le libère. */
 esp_err_t web_send_json(httpd_req_t *req, cJSON *root);

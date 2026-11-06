@@ -1,12 +1,16 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "esp_check.h"
 #include "esp_ota_ops.h"
 #include "esp_app_format.h"
 #include "esp_app_desc.h"
 #include "config.h"
+#include "http_util.h"
 #include "sysmon.h"
 #include "web_priv.h"
 
@@ -16,6 +20,9 @@ static const char *TAG = "ota";
 #define WWW_NAME_MAX    32
 #define WWW_FILE_MAX    (64 * 1024)
 #define RECV_RETRIES    5
+#define OTA_TLS_WAIT_MS 20000
+#define OTA_LOG_STEP    (128 * 1024)
+#define OTA_HEAP_MIN    (28 * 1024)     /* abandon propre avant le redémarrage « heap critique » */
 /* En-tête d'image, premier segment, puis description de l'application. */
 #define APP_DESC_OFFSET (sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t))
 #define HEAD_LEN        (APP_DESC_OFFSET + sizeof(esp_app_desc_t))
@@ -109,21 +116,43 @@ static esp_err_t ota_post(httpd_req_t *req)
         return web_send_error(req, WEB_400, bad, NULL);
     }
 
-    ESP_LOGW(TAG, "mise à jour du firmware vers %s (%u octets)", part->label, (unsigned)req->content_len);
+    /* Aucune session TLS (Envoy, Open-Meteo, ~40 Ko de heap) pendant l'écriture. */
+    if (xSemaphoreTake(g_tls_mutex, pdMS_TO_TICKS(OTA_TLS_WAIT_MS)) != pdTRUE) {
+        return web_send_error(req, WEB_503, "session TLS en cours, réessayer", NULL);
+    }
+    ESP_LOGW(TAG, "mise à jour du firmware vers %s (%u octets), heap %u o", part->label,
+             (unsigned)req->content_len, (unsigned)esp_get_free_heap_size());
+    sysmon_set_ota_active(true);
     esp_ota_handle_t h;
     err = esp_ota_begin(part, OTA_WITH_SEQUENTIAL_WRITES, &h);
     if (err != ESP_OK) {
+        sysmon_set_ota_active(false);
+        xSemaphoreGive(g_tls_mutex);
         ESP_LOGE(TAG, "esp_ota_begin : %s", esp_err_to_name(err));
         return web_send_error(req, WEB_500, "écriture en flash impossible", NULL);
     }
     size_t done = 0;
     size_t chunk = head;
+    size_t next_log = OTA_LOG_STEP;
+    bool low_heap = false;
     while (err == ESP_OK) {
         err = esp_ota_write(h, s_buf, chunk);
         done += chunk;
         if (err != ESP_OK || done >= req->content_len) {
             break;
         }
+        uint32_t heap = esp_get_free_heap_size();
+        if (done >= next_log) {
+            next_log += OTA_LOG_STEP;
+            ESP_LOGI(TAG, "%u / %u Ko, heap %u o", (unsigned)(done / 1024), (unsigned)(req->content_len / 1024),
+                     (unsigned)heap);
+        }
+        if (heap < OTA_HEAP_MIN) {
+            low_heap = true;
+            err = ESP_ERR_NO_MEM;
+            break;
+        }
+        vTaskDelay(1);      /* laisse tourner les tâches de priorité inférieure (watchdog de l'idle) */
         size_t want = req->content_len - done;
         int r = recv_some(req, s_buf, want < sizeof(s_buf) ? want : sizeof(s_buf));
         if (r <= 0) {
@@ -133,14 +162,21 @@ static esp_err_t ota_post(httpd_req_t *req)
         chunk = (size_t)r;
     }
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "écriture interrompue à %u octets : %s", (unsigned)done, esp_err_to_name(err));
+        ESP_LOGE(TAG, "écriture interrompue à %u octets : %s, heap %u o", (unsigned)done, esp_err_to_name(err),
+                 (unsigned)esp_get_free_heap_size());
         esp_ota_abort(h);
-        return web_send_error(req, WEB_400, "réception ou écriture interrompue, firmware actuel conservé", NULL);
+        sysmon_set_ota_active(false);
+        xSemaphoreGive(g_tls_mutex);
+        return web_send_error(req, low_heap ? WEB_503 : WEB_400,
+                              low_heap ? "mémoire insuffisante, firmware actuel conservé"
+                                       : "réception ou écriture interrompue, firmware actuel conservé", NULL);
     }
     err = esp_ota_end(h);     /* vérifie l'empreinte de l'image */
     if (err == ESP_OK) {
         err = esp_ota_set_boot_partition(part);
     }
+    sysmon_set_ota_active(false);
+    xSemaphoreGive(g_tls_mutex);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "image invalide : %s", esp_err_to_name(err));
         return web_send_error(req, WEB_400, "image invalide, firmware actuel conservé", NULL);

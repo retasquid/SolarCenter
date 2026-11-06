@@ -7,7 +7,14 @@
 #include "esp_err.h"
 
 /* Une seule session TLS à la fois (CLAUDE.md §2) : pris par http_get() pour toute URL https. */
-extern SemaphoreHandle_t g_tls_mutex;
+extern SemaphoreHandle_t g_tls_mutex;      /* récursif */
+
+/* Tampon de réponse partagé par les grosses réponses (Envoy, Open-Meteo). À n'utiliser qu'entre
+ * http_shared_lock() et http_shared_unlock(), qui prennent g_tls_mutex : requête ET décodage. */
+#define HTTP_SHARED_BUF_LEN 8192
+extern char g_http_shared_buf[HTTP_SHARED_BUF_LEN];
+bool http_shared_lock(void);                 /* faux après 15 s d'attente */
+void http_shared_unlock(void);
 
 typedef enum {
     HTTP_TLS_NONE = 0,      /* http:// */

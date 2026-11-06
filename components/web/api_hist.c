@@ -1,4 +1,5 @@
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 #include "esp_log.h"
@@ -21,10 +22,8 @@ static const char *TAG = "web";
 #define RATIO_SURPLUS_DEF   0.5f
 #define ROI_SPREAD          0.2f    /* fourchette ±20 % tant que < 12 mois */
 
-/* Tampons statiques : tous les gestionnaires s'exécutent dans l'unique tâche httpd. */
-static jw_t s_jw;
-static cfg_t s_cfg;
-static char s_body[128];
+/* Corps de requête lu dans g_web_scratch (une seule requête à la fois dans httpd). */
+#define BODY_MAX    128
 
 static bool query_param(httpd_req_t *req, const char *key, char *val, size_t cap)
 {
@@ -44,6 +43,103 @@ static uint32_t slot_start(int64_t t)
 static bool time_ok(void)
 {
     return time(NULL) > 1700000000;
+}
+
+/* ---------- GET /api/export.csv?range=7d|days ---------- */
+
+/* Format Excel français : séparateur « ; », virgule décimale, BOM UTF-8 pour les accents. */
+static void csv_num(jw_t *w, float v, int decimals, bool last)
+{
+    char buf[24];
+    if (!isfinite(v)) {
+        buf[0] = '\0';
+    } else {
+        snprintf(buf, sizeof(buf), "%.*f", decimals, (double)v);
+        char *dot = strchr(buf, '.');
+        if (dot != NULL) {
+            *dot = ',';
+        }
+    }
+    jw_printf(w, "%s%s", buf, last ? "\r\n" : ";");
+}
+
+static bool csv_slot(const hist_slot_t *s, void *arg)
+{
+    jw_t *w = arg;
+    struct tm tm;
+    time_t t = (time_t)s->ts;
+    localtime_r(&t, &tm);
+    jw_printf(w, "%04d-%02d-%02d %02d:%02d;", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min);
+    csv_num(w, s->e_pv, 0, false);
+    csv_num(w, s->e_home, 0, false);
+    csv_num(w, s->e_ce, 0, false);
+    csv_num(w, s->e_import, 0, false);
+    csv_num(w, s->e_export, 0, false);
+    csv_num(w, s->e_batt_ch, 0, false);
+    csv_num(w, s->e_batt_dis, 0, false);
+    csv_num(w, s->soc <= 100 ? (float)s->soc : NAN, 0, false);
+    csv_num(w, (float)s->cov_full, 0, false);
+    csv_num(w, s->pv_pred, 0, false);
+    csv_num(w, s->base_pred, 0, true);
+    return w->err == ESP_OK;
+}
+
+static void csv_day_row(jw_t *w, uint32_t date, const energy_acc_t *a)
+{
+    jw_printf(w, "%04lu-%02lu-%02lu;", (unsigned long)(date / 10000), (unsigned long)(date / 100 % 100),
+              (unsigned long)(date % 100));
+    const float kwh[] = { a->e_pv, a->e_home, a->e_import, a->e_export, a->e_batt_ch, a->e_batt_dis,
+                          a->e_ce, a->e_ce_local };
+    for (size_t i = 0; i < sizeof(kwh) / sizeof(kwh[0]); i++) {
+        csv_num(w, kwh[i] / 1000.0f, 3, false);
+    }
+    csv_num(w, a->c_real, 3, false);
+    csv_num(w, a->c_no_batt, 3, false);
+    csv_num(w, a->c_no_install, 3, false);
+    csv_num(w, a->secs_grid > 0.0f ? 100.0f * a->secs_full / a->secs_grid : NAN, 0, true);
+}
+
+static bool csv_day(const hist_day_t *d, void *arg)
+{
+    jw_t *w = arg;
+    csv_day_row(w, d->date, &d->acc);
+    return w->err == ESP_OK;
+}
+
+static esp_err_t export_get(httpd_req_t *req)
+{
+    char range[8] = "7d";
+    query_param(req, "range", range, sizeof(range));
+    bool days = strcmp(range, "days") == 0;
+    if (!days && strcmp(range, "7d") != 0) {
+        return web_send_error(req, WEB_400, "range attendu : 7d ou days", "range");
+    }
+    if (!time_ok()) {
+        return web_send_error(req, "503 Service Unavailable", "heure non synchronisée", NULL);
+    }
+    jw_t *w = &g_web_jw;
+    jw_begin(w, req);
+    httpd_resp_set_type(req, "text/csv; charset=utf-8");
+    httpd_resp_set_hdr(req, "Content-Disposition", days ? "attachment; filename=\"solaire-jours.csv\""
+                                                         : "attachment; filename=\"solaire-30min.csv\"");
+    jw_printf(w, "\xEF\xBB\xBF");
+    if (days) {
+        jw_printf(w, "date;pv_kwh;maison_kwh;import_kwh;export_kwh;charge_kwh;decharge_kwh;chauffe_eau_kwh;"
+                     "chauffe_eau_local_kwh;cout_reel_eur;cout_sans_batterie_eur;cout_sans_installation_eur;"
+                     "couverture_pct\r\n");
+        history_foreach_day(HIST_DAYS_KEPT - 1, csv_day, w);
+        static energy_acc_t today;
+        uint32_t date = 0;
+        if (history_today(&today, &date)) {
+            csv_day_row(w, date, &today);   /* jour en cours, créneaux clos */
+        }
+    } else {
+        jw_printf(w, "debut;pv_wh;maison_wh;chauffe_eau_wh;import_wh;export_wh;charge_wh;decharge_wh;soc_pct;"
+                     "couverture_pct;pv_prevu_wh;base_prevue_wh\r\n");
+        uint32_t last = slot_start(time(NULL)) - HIST_SLOT_S;
+        history_foreach_slot(last - (uint32_t)(SLOTS_7D - 1) * HIST_SLOT_S, last, csv_slot, w);
+    }
+    return jw_end(w);
 }
 
 /* ---------- GET /api/history?range=24h|7d ---------- */
@@ -91,13 +187,13 @@ static esp_err_t history_get(httpd_req_t *req)
     uint32_t last = slot_start(time(NULL)) - HIST_SLOT_S;     /* dernier créneau clos */
     uint32_t first = last - (uint32_t)(n - 1) * HIST_SLOT_S;
 
-    jw_begin(&s_jw, req);
-    jw_printf(&s_jw, "{\"range\":\"%s\",\"slot_s\":%d,\"cols\":[\"t\",\"pv\",\"home\",\"ce\",\"imp\",\"exp\","
+    jw_begin(&g_web_jw, req);
+    jw_printf(&g_web_jw, "{\"range\":\"%s\",\"slot_s\":%d,\"cols\":[\"t\",\"pv\",\"home\",\"ce\",\"imp\",\"exp\","
               "\"ch\",\"dis\",\"soc\",\"cov\",\"pv_pred\",\"base_pred\"],\"rows\":[", range, HIST_SLOT_S);
-    rows_ctx_t c = { .w = &s_jw, .first = true };
+    rows_ctx_t c = { .w = &g_web_jw, .first = true };
     history_foreach_slot(first, last, emit_slot, &c);
-    jw_printf(&s_jw, "]}");
-    return jw_end(&s_jw);
+    jw_printf(&g_web_jw, "]}");
+    return jw_end(&g_web_jw);
 }
 
 /* ---------- GET /api/forecast ---------- */
@@ -144,7 +240,7 @@ static esp_err_t forecast_get_handler(httpd_req_t *req)
     }
     static forecast_t fc;
     forecast_get(&fc);
-    config_get(&s_cfg);
+    config_get(&g_web_cfg);
     int64_t now = time(NULL);
 
     /* Créneaux depuis minuit local aujourd'hui. */
@@ -163,36 +259,36 @@ static esp_err_t forecast_get_handler(httpd_req_t *req)
     int profile_slots = 0;
     history_model_info(&pv, &base, &profile_slots);
 
-    jw_begin(&s_jw, req);
-    jw_printf(&s_jw, "{\"ok\":%s,\"fetched\":%lld,\"coords\":%s,\"midnight\":%lu,\"slot_s\":%d,",
+    jw_begin(&g_web_jw, req);
+    jw_printf(&g_web_jw, "{\"ok\":%s,\"fetched\":%lld,\"coords\":%s,\"midnight\":%lu,\"slot_s\":%d,",
               fc.valid ? "true" : "false", (long long)fc.fetched,
-              (s_cfg.pv.lat != 0.0f || s_cfg.pv.lon != 0.0f) ? "true" : "false",
+              (g_web_cfg.pv.lat != 0.0f || g_web_cfg.pv.lon != 0.0f) ? "true" : "false",
               (unsigned long)midnight, HIST_SLOT_S);
-    jw_printf(&s_jw, "\"cols\":[\"t\",\"gti\",\"temp\",\"pv_raw\",\"pv\",\"base_prof\",\"base\"],\"rows\":[");
+    jw_printf(&g_web_jw, "\"cols\":[\"t\",\"gti\",\"temp\",\"pv_raw\",\"pv\",\"base_prof\",\"base\"],\"rows\":[");
     for (int i = 0; i < FORECAST_SLOTS; i++) {
         uint32_t ts = midnight + (uint32_t)i * HIST_SLOT_S;
         hist_pred_t p;
         history_predict(ts, &p);
-        jw_printf(&s_jw, "%s[%lu,", i ? "," : "", (unsigned long)ts);
-        jw_num(&s_jw, p.gti, 0);
-        jw_printf(&s_jw, ",");
-        jw_num(&s_jw, p.temp, 1);
-        jw_printf(&s_jw, ",");
-        jw_num(&s_jw, p.pv_raw, 0);
-        jw_printf(&s_jw, ",");
-        jw_num(&s_jw, p.pv, 0);
-        jw_printf(&s_jw, ",");
-        jw_num(&s_jw, p.base_prof, 0);
-        jw_printf(&s_jw, ",");
-        jw_num(&s_jw, p.base, 0);
-        jw_printf(&s_jw, "]");
+        jw_printf(&g_web_jw, "%s[%lu,", i ? "," : "", (unsigned long)ts);
+        jw_num(&g_web_jw, p.gti, 0);
+        jw_printf(&g_web_jw, ",");
+        jw_num(&g_web_jw, p.temp, 1);
+        jw_printf(&g_web_jw, ",");
+        jw_num(&g_web_jw, p.pv_raw, 0);
+        jw_printf(&g_web_jw, ",");
+        jw_num(&g_web_jw, p.pv, 0);
+        jw_printf(&g_web_jw, ",");
+        jw_num(&g_web_jw, p.base_prof, 0);
+        jw_printf(&g_web_jw, ",");
+        jw_num(&g_web_jw, p.base, 0);
+        jw_printf(&g_web_jw, "]");
     }
-    jw_printf(&s_jw, "],");
-    emit_model(&s_jw, "pv", &pv, mae.pv_err, mae.pv_n);
-    jw_printf(&s_jw, ",");
-    emit_model(&s_jw, "base", &base, mae.base_err, mae.base_n);
-    jw_printf(&s_jw, ",\"profile_slots\":%d,\"profile_total\":%d}", profile_slots, PROFILE_SLOTS * PROFILE_DAY_TYPES);
-    return jw_end(&s_jw);
+    jw_printf(&g_web_jw, "],");
+    emit_model(&g_web_jw, "pv", &pv, mae.pv_err, mae.pv_n);
+    jw_printf(&g_web_jw, ",");
+    emit_model(&g_web_jw, "base", &base, mae.base_err, mae.base_n);
+    jw_printf(&g_web_jw, ",\"profile_slots\":%d,\"profile_total\":%d}", profile_slots, PROFILE_SLOTS * PROFILE_DAY_TYPES);
+    return jw_end(&g_web_jw);
 }
 
 /* ---------- GET /api/stats?period=day|7d|30d|year|all ---------- */
@@ -283,8 +379,8 @@ static esp_err_t stats_get(httpd_req_t *req)
     if (!time_ok()) {
         return web_send_error(req, "503 Service Unavailable", "heure non synchronisée", NULL);
     }
-    config_get(&s_cfg);
-    float wear = stats_wear_cost(s_cfg.batt.price_eur, s_cfg.batt.cycles, s_cfg.batt.capa_kwh);
+    config_get(&g_web_cfg);
+    float wear = stats_wear_cost(g_web_cfg.batt.price_eur, g_web_cfg.batt.cycles, g_web_cfg.batt.capa_kwh);
 
     static sum_ctx_t sum;
     memset(&sum, 0, sizeof(sum));
@@ -326,70 +422,70 @@ static esp_err_t stats_get(httpd_req_t *req)
         rc.last12[month - 1].days_observed += 1;
     }
     tariff_t tf;
-    config_tariff(&s_cfg, &tf);
+    config_tariff(&g_web_cfg, &tf);
     roi_params_t rp = {
-        .kwc = s_cfg.pv.kwc,
-        .yield_kwh_kwc = s_cfg.roi.yield_kwh_kwc,
-        .capa_kwh = s_cfg.batt.capa_kwh,
-        .eta = s_cfg.batt.eta,
+        .kwc = g_web_cfg.pv.kwc,
+        .yield_kwh_kwc = g_web_cfg.roi.yield_kwh_kwc,
+        .capa_kwh = g_web_cfg.batt.capa_kwh,
+        .eta = g_web_cfg.batt.eta,
         .price_hp = tariff_mean_price(&tf, false),
         .price_sell = tf.price_sell,
         .ratio_surplus = (rc.total_days >= RATIO_SURPLUS_DAYS && rc.pv_kwh > 0.0f)
                          ? rc.surplus_kwh / rc.pv_kwh : RATIO_SURPLUS_DEF,
     };
-    memcpy(rp.month_frac, s_cfg.roi.month_frac, sizeof(rp.month_frac));
+    memcpy(rp.month_frac, g_web_cfg.roi.month_frac, sizeof(rp.month_frac));
     for (int i = 0; i < 12; i++) {
         rp.hist_surplus_day[i] = rc.old_days[i] > 0 ? rc.old_surplus[i] / (float)rc.old_days[i] : -1.0f;
     }
     roi_t roi;
-    stats_roi(rc.last12, &rp, s_cfg.batt.price_eur, year, &roi);
+    stats_roi(rc.last12, &rp, g_web_cfg.batt.price_eur, year, &roi);
 
-    jw_begin(&s_jw, req);
-    jw_printf(&s_jw, "{\"period\":\"%s\",\"days\":%d,", period, sum.days);
-    emit_acc(&s_jw, &sum.acc);
-    jw_printf(&s_jw, ",\"autoconso\":");
-    jw_num(&s_jw, r.autoconso, 4);
-    jw_printf(&s_jw, ",\"autoprod\":");
-    jw_num(&s_jw, r.autoprod, 4);
-    jw_printf(&s_jw, ",\"cost\":{\"real\":");
-    jw_num(&s_jw, sum.acc.c_real, 3);
-    jw_printf(&s_jw, ",\"no_batt\":");
-    jw_num(&s_jw, sum.acc.c_no_batt, 3);
-    jw_printf(&s_jw, ",\"no_install\":");
-    jw_num(&s_jw, sum.acc.c_no_install, 3);
-    jw_printf(&s_jw, "},\"gain\":{\"total\":");
-    jw_num(&s_jw, r.gain_total, 3);
-    jw_printf(&s_jw, ",\"batt\":");
-    jw_num(&s_jw, r.gain_batt, 3);
-    jw_printf(&s_jw, ",\"batt_net\":");
-    jw_num(&s_jw, r.gain_batt_net, 3);
-    jw_printf(&s_jw, ",\"ce\":");
-    jw_num(&s_jw, r.gain_ce, 3);
-    jw_printf(&s_jw, "},\"coverage\":");
-    jw_num(&s_jw, sum.acc.secs_grid > 0.0f ? sum.acc.secs_full / sum.acc.secs_grid : NAN, 3);
+    jw_begin(&g_web_jw, req);
+    jw_printf(&g_web_jw, "{\"period\":\"%s\",\"days\":%d,", period, sum.days);
+    emit_acc(&g_web_jw, &sum.acc);
+    jw_printf(&g_web_jw, ",\"autoconso\":");
+    jw_num(&g_web_jw, r.autoconso, 4);
+    jw_printf(&g_web_jw, ",\"autoprod\":");
+    jw_num(&g_web_jw, r.autoprod, 4);
+    jw_printf(&g_web_jw, ",\"cost\":{\"real\":");
+    jw_num(&g_web_jw, sum.acc.c_real, 3);
+    jw_printf(&g_web_jw, ",\"no_batt\":");
+    jw_num(&g_web_jw, sum.acc.c_no_batt, 3);
+    jw_printf(&g_web_jw, ",\"no_install\":");
+    jw_num(&g_web_jw, sum.acc.c_no_install, 3);
+    jw_printf(&g_web_jw, "},\"gain\":{\"total\":");
+    jw_num(&g_web_jw, r.gain_total, 3);
+    jw_printf(&g_web_jw, ",\"batt\":");
+    jw_num(&g_web_jw, r.gain_batt, 3);
+    jw_printf(&g_web_jw, ",\"batt_net\":");
+    jw_num(&g_web_jw, r.gain_batt_net, 3);
+    jw_printf(&g_web_jw, ",\"ce\":");
+    jw_num(&g_web_jw, r.gain_ce, 3);
+    jw_printf(&g_web_jw, "},\"coverage\":");
+    jw_num(&g_web_jw, sum.acc.secs_grid > 0.0f ? sum.acc.secs_full / sum.acc.secs_grid : NAN, 3);
 
-    jw_printf(&s_jw, ",\"roi\":{\"price\":");
-    jw_num(&s_jw, s_cfg.batt.price_eur, 2);
-    jw_printf(&s_jw, ",\"wear_kwh\":");
-    jw_num(&s_jw, wear, 4);
-    jw_printf(&s_jw, ",\"cum_net\":");
-    jw_num(&s_jw, rc.cum_net, 2);
-    jw_printf(&s_jw, ",\"annual\":");
-    jw_num(&s_jw, roi.annual_gain, 2);
-    jw_printf(&s_jw, ",\"payback_years\":");
-    jw_num(&s_jw, roi.payback_years, 2);
-    jw_printf(&s_jw, ",\"spread\":%.2f,\"estimate\":%s,\"months_observed\":%d,\"ratio_surplus\":",
+    jw_printf(&g_web_jw, ",\"roi\":{\"price\":");
+    jw_num(&g_web_jw, g_web_cfg.batt.price_eur, 2);
+    jw_printf(&g_web_jw, ",\"wear_kwh\":");
+    jw_num(&g_web_jw, wear, 4);
+    jw_printf(&g_web_jw, ",\"cum_net\":");
+    jw_num(&g_web_jw, rc.cum_net, 2);
+    jw_printf(&g_web_jw, ",\"annual\":");
+    jw_num(&g_web_jw, roi.annual_gain, 2);
+    jw_printf(&g_web_jw, ",\"payback_years\":");
+    jw_num(&g_web_jw, roi.payback_years, 2);
+    jw_printf(&g_web_jw, ",\"spread\":%.2f,\"estimate\":%s,\"months_observed\":%d,\"ratio_surplus\":",
               (double)(roi.estimate ? ROI_SPREAD : 0.0f), roi.estimate ? "true" : "false", roi.months_observed);
-    jw_num(&s_jw, rp.ratio_surplus, 3);
-    uint32_t c = s_cfg.batt.commissioning;
+    jw_num(&g_web_jw, rp.ratio_surplus, 3);
+    uint32_t c = g_web_cfg.batt.commissioning;
     if (c != 0) {
-        jw_printf(&s_jw, ",\"commissioning\":\"%04lu-%02lu-%02lu\"", (unsigned long)(c / 10000),
+        jw_printf(&g_web_jw, ",\"commissioning\":\"%04lu-%02lu-%02lu\"", (unsigned long)(c / 10000),
                   (unsigned long)(c / 100 % 100), (unsigned long)(c % 100));
     } else {
-        jw_printf(&s_jw, ",\"commissioning\":null");
+        jw_printf(&g_web_jw, ",\"commissioning\":null");
     }
-    jw_printf(&s_jw, "}}");
-    return jw_end(&s_jw);
+    jw_printf(&g_web_jw, "}}");
+    return jw_end(&g_web_jw);
 }
 
 /* ---------- POST /api/models/reset ---------- */
@@ -399,11 +495,11 @@ static esp_err_t models_reset_post(httpd_req_t *req)
     if (!web_check_admin(req)) {
         return web_send_error(req, WEB_401, "mot de passe administrateur invalide", NULL);
     }
-    int n = web_read_body(req, s_body, sizeof(s_body));
+    int n = web_read_body(req, (char *)g_web_scratch, BODY_MAX);
     if (n < 0) {
         return web_send_error(req, WEB_400, "corps invalide", NULL);
     }
-    cJSON *root = cJSON_ParseWithLength(s_body, (size_t)n);
+    cJSON *root = cJSON_ParseWithLength((char *)g_web_scratch, (size_t)n);
     const cJSON *m = cJSON_GetObjectItemCaseSensitive(root, "model");
     const char *which = cJSON_IsString(m) ? m->valuestring : "";
     bool all = strcmp(which, "all") == 0;
@@ -426,6 +522,7 @@ esp_err_t api_hist_register(httpd_handle_t srv)
 {
     const httpd_uri_t routes[] = {
         { .uri = "/api/history",      .method = HTTP_GET,  .handler = history_get },
+        { .uri = "/api/export.csv",   .method = HTTP_GET,  .handler = export_get },
         { .uri = "/api/forecast",     .method = HTTP_GET,  .handler = forecast_get_handler },
         { .uri = "/api/stats",        .method = HTTP_GET,  .handler = stats_get },
         { .uri = "/api/models/reset", .method = HTTP_POST, .handler = models_reset_post },

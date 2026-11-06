@@ -16,6 +16,12 @@
 #define WEB_500 "500 Internal Server Error"
 #define WEB_503 "503 Service Unavailable"
 
+/* Tampons partagés par tous les gestionnaires : httpd n'en exécute qu'un à la fois (une seule tâche).
+ * Un gestionnaire ne doit pas garder de pointeur vers eux après son retour. */
+#define WEB_SCRATCH_LEN 4096
+extern uint64_t g_web_scratch[WEB_SCRATCH_LEN / sizeof(uint64_t)];
+extern cfg_t g_web_cfg;            /* copie de travail de la config */
+
 /* Envoie root en JSON puis le libère. */
 esp_err_t web_send_json(httpd_req_t *req, cJSON *root);
 
@@ -55,6 +61,8 @@ void jw_begin(jw_t *w, httpd_req_t *req);
 void jw_printf(jw_t *w, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 void jw_num(jw_t *w, float v, int decimals);     /* "null" si non fini */
 esp_err_t jw_end(jw_t *w);
+
+extern jw_t g_web_jw;               /* écrivain JSON partagé (même règle que g_web_scratch) */
 
 /* Conversion de la config ; les secrets sont renvoyés "***" s'ils sont définis. */
 cJSON *cfg_to_json(const cfg_t *c);

@@ -1,4 +1,5 @@
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include "freertos/FreeRTOS.h"
@@ -22,7 +23,6 @@ typedef struct {
 } cfg_blob_t;
 
 static cfg_t s_cfg;
-static cfg_blob_t s_blob;          /* tampon statique de lecture/écriture NVS */
 static cfg_status_t s_status;
 
 static StaticSemaphore_t s_mtx_buf;
@@ -51,35 +51,34 @@ static const struct {
 };
 
 /* Préfixe connu recopié, champs ajoutés à leurs valeurs par défaut. */
-static cfg_status_t migrate(size_t len)
+static cfg_status_t migrate(const cfg_blob_t *b, size_t len)
 {
     for (size_t i = 0; i < sizeof(k_old_versions) / sizeof(k_old_versions[0]); i++) {
-        if (s_blob.version != k_old_versions[i].version) {
+        if (b->version != k_old_versions[i].version) {
             continue;
         }
         uint16_t size = k_old_versions[i].size;
-        if (s_blob.size != size || len != BLOB_HDR_SIZE + size) {
+        if (b->size != size || len != BLOB_HDR_SIZE + size) {
             return CFG_STATUS_RESET_VERSION;
         }
-        if (blob_crc(&s_blob, size) != s_blob.crc) {
+        if (blob_crc(b, size) != b->crc) {
             return CFG_STATUS_RESET_CRC;
         }
-        static cfg_t tmp;
-        cfg_set_defaults(&tmp);
-        memcpy(&tmp, &s_blob.cfg, k_old_versions[i].data);
-        const char *bad = cfg_validate(&tmp);
+        /* s_cfg contient déjà les valeurs par défaut : on n'y recopie que le préfixe connu. */
+        memcpy(&s_cfg, &b->cfg, k_old_versions[i].data);
+        const char *bad = cfg_validate(&s_cfg);
         if (bad != NULL) {
-            ESP_LOGE(TAG, "config v%u invalide après migration (%s)", s_blob.version, bad);
+            ESP_LOGE(TAG, "config v%u invalide après migration (%s)", b->version, bad);
+            cfg_set_defaults(&s_cfg);
             return CFG_STATUS_RESET_INVALID;
         }
-        memcpy(&s_cfg, &tmp, sizeof(s_cfg));
-        ESP_LOGW(TAG, "config migrée de v%u vers v%d", s_blob.version, CFG_VERSION);
+        ESP_LOGW(TAG, "config migrée de v%u vers v%d", b->version, CFG_VERSION);
         return CFG_STATUS_MIGRATED;
     }
     return CFG_STATUS_RESET_VERSION;
 }
 
-static cfg_status_t load(void)
+static cfg_status_t load_blob(cfg_blob_t *b)
 {
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NS, NVS_READONLY, &h);
@@ -91,8 +90,8 @@ static cfg_status_t load(void)
         return CFG_STATUS_RESET_READ;
     }
 
-    size_t len = sizeof(s_blob);
-    err = nvs_get_blob(h, NVS_KEY, &s_blob, &len);
+    size_t len = sizeof(*b);
+    err = nvs_get_blob(h, NVS_KEY, b, &len);
     nvs_close(h);
     if (err == ESP_ERR_NVS_NOT_FOUND) {
         return CFG_STATUS_FIRST_BOOT;
@@ -105,22 +104,34 @@ static cfg_status_t load(void)
         ESP_LOGE(TAG, "nvs_get_blob : %s", esp_err_to_name(err));
         return CFG_STATUS_RESET_READ;
     }
-    if (len >= BLOB_HDR_SIZE && s_blob.version < CFG_VERSION) {
-        return migrate(len);
+    if (len >= BLOB_HDR_SIZE && b->version < CFG_VERSION) {
+        return migrate(b, len);
     }
-    if (len != sizeof(s_blob) || s_blob.version != CFG_VERSION || s_blob.size != sizeof(cfg_t)) {
+    if (len != sizeof(*b) || b->version != CFG_VERSION || b->size != sizeof(cfg_t)) {
         return CFG_STATUS_RESET_VERSION;
     }
-    if (blob_crc(&s_blob, sizeof(s_blob.cfg)) != s_blob.crc) {
+    if (blob_crc(b, sizeof(b->cfg)) != b->crc) {
         return CFG_STATUS_RESET_CRC;
     }
-    const char *bad = cfg_validate(&s_blob.cfg);
+    const char *bad = cfg_validate(&b->cfg);
     if (bad != NULL) {
         ESP_LOGE(TAG, "config enregistrée invalide (%s)", bad);
         return CFG_STATUS_RESET_INVALID;
     }
-    memcpy(&s_cfg, &s_blob.cfg, sizeof(s_cfg));
+    memcpy(&s_cfg, &b->cfg, sizeof(s_cfg));
     return CFG_STATUS_OK;
+}
+
+/* Le blob NVS n'est alloué que le temps d'une lecture (démarrage) ou d'une écriture (rare). */
+static cfg_status_t load(void)
+{
+    cfg_blob_t *b = malloc(sizeof(*b));
+    if (b == NULL) {
+        return CFG_STATUS_RESET_READ;
+    }
+    cfg_status_t st = load_blob(b);
+    free(b);
+    return st;
 }
 
 esp_err_t config_init(void)
@@ -133,10 +144,13 @@ esp_err_t config_init(void)
     s_status = load();
     if (s_status == CFG_STATUS_MIGRATED) {
         /* Réécrit au nouveau format ; le statut reste « migrée » pour l'interface. */
-        static cfg_t migrated;
-        memcpy(&migrated, &s_cfg, sizeof(migrated));
-        if (config_save(&migrated, NULL) == ESP_OK) {
-            s_status = CFG_STATUS_MIGRATED;
+        cfg_t *migrated = malloc(sizeof(*migrated));
+        if (migrated != NULL) {
+            memcpy(migrated, &s_cfg, sizeof(*migrated));
+            if (config_save(migrated, NULL) == ESP_OK) {
+                s_status = CFG_STATUS_MIGRATED;
+            }
+            free(migrated);
         }
     } else if (s_status == CFG_STATUS_OK) {
         ESP_LOGI(TAG, "config v%d chargée (%u octets)", CFG_VERSION, (unsigned)sizeof(cfg_t));
@@ -164,16 +178,22 @@ esp_err_t config_save(const cfg_t *in, const char **bad_field)
         return ESP_ERR_INVALID_ARG;
     }
 
+    cfg_blob_t *b = malloc(sizeof(*b));
+    if (b == NULL) {
+        ESP_LOGE(TAG, "mémoire insuffisante pour enregistrer la config");
+        return ESP_ERR_NO_MEM;
+    }
+    b->version = CFG_VERSION;
+    b->size = sizeof(cfg_t);
+    memcpy(&b->cfg, in, sizeof(b->cfg));
+    b->crc = blob_crc(b, sizeof(b->cfg));
+
     xSemaphoreTake(s_mtx, portMAX_DELAY);
-    s_blob.version = CFG_VERSION;
-    s_blob.size = sizeof(cfg_t);
-    memcpy(&s_blob.cfg, in, sizeof(s_blob.cfg));
-    s_blob.crc = blob_crc(&s_blob, sizeof(s_blob.cfg));
 
     nvs_handle_t h;
     esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &h);
     if (err == ESP_OK) {
-        err = nvs_set_blob(h, NVS_KEY, &s_blob, sizeof(s_blob));
+        err = nvs_set_blob(h, NVS_KEY, b, sizeof(*b));
         if (err == ESP_OK) {
             err = nvs_commit(h);
         }
@@ -184,6 +204,7 @@ esp_err_t config_save(const cfg_t *in, const char **bad_field)
         s_status = CFG_STATUS_OK;
     }
     xSemaphoreGive(s_mtx);
+    free(b);
 
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "écriture NVS impossible : %s", esp_err_to_name(err));

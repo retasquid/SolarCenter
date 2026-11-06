@@ -8,12 +8,10 @@
 static const char *TAG = "drv_envoy";
 
 #define ENVOY_PATH      "/production.json?details=1"
-#define ENVOY_BUF       8192
 /* Constaté le 2026-11-04 (fw D8.3) : avec jeton, production.json?details=1 répond en plus de 3 s.
  * Lu dans task_poll, séparée du Shelly : ce délai ne retarde pas le capteur maître. */
 #define ENVOY_TIMEOUT_MS 8000
 
-static char s_buf[ENVOY_BUF];
 
 static bool str_is(const cJSON *o, const char *k, const char *val)
 {
@@ -65,14 +63,18 @@ esp_err_t drv_envoy_poll(const cfg_t *cfg, envoy_reading_t *out)
     };
     size_t len;
     int status;
-    esp_err_t err = http_get(&req, s_buf, sizeof(s_buf), &len, &status);
-    if (err == ESP_OK) {
-        err = drv_envoy_parse(s_buf, len, out);
+    if (!http_shared_lock()) {
+        return ESP_ERR_TIMEOUT;
     }
+    esp_err_t err = http_get(&req, g_http_shared_buf, HTTP_SHARED_BUF_LEN, &len, &status);
+    if (err == ESP_OK) {
+        err = drv_envoy_parse(g_http_shared_buf, len, out);
+    }
+    http_shared_unlock();
     if (err == ESP_ERR_INVALID_RESPONSE && status == 401) {
         ESP_LOGW(TAG, "jeton refusé (HTTP 401) : vérifier ou renouveler le jeton dans les Paramètres");
     } else if (err == ESP_ERR_INVALID_SIZE) {
-        ESP_LOGW(TAG, "réponse plus grande que %d o", ENVOY_BUF);
+        ESP_LOGW(TAG, "réponse plus grande que %d o", HTTP_SHARED_BUF_LEN);
     } else if (err != ESP_OK) {
         ESP_LOGD(TAG, "lecture : %s (HTTP %d)", esp_err_to_name(err), status);
     }

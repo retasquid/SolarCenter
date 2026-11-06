@@ -18,7 +18,9 @@ extern const char setup_html_start[] asm("_binary_setup_html_start");
 extern const char setup_html_end[] asm("_binary_setup_html_end");
 
 /* Tampons statiques : les gestionnaires s'exécutent tous dans l'unique tâche httpd. */
-static char s_chunk[1024];
+uint64_t g_web_scratch[WEB_SCRATCH_LEN / sizeof(uint64_t)];
+cfg_t g_web_cfg;
+jw_t g_web_jw;
 static char s_path[sizeof(WWW_ROOT) + URI_MAX + 4];
 
 esp_err_t web_send_json(httpd_req_t *req, cJSON *root)
@@ -123,9 +125,10 @@ static const char *mime_for(const char *path)
 
 static esp_err_t send_file(httpd_req_t *req, FILE *f)
 {
+    char *chunk = (char *)g_web_scratch;
     size_t n;
-    while ((n = fread(s_chunk, 1, sizeof(s_chunk), f)) > 0) {
-        esp_err_t err = httpd_resp_send_chunk(req, s_chunk, n);
+    while ((n = fread(chunk, 1, WEB_SCRATCH_LEN, f)) > 0) {
+        esp_err_t err = httpd_resp_send_chunk(req, chunk, n);
         if (err != ESP_OK) {
             return err;
         }

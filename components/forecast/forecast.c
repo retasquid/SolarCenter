@@ -22,6 +22,7 @@ static const char *TAG = "forecast";
                     "&hourly=global_tilted_irradiance,temperature_2m&tilt=%.0f&azimuth=%.0f" \
                     "&timezone=auto&forecast_days=2&timeformat=unixtime"
 #define OM_BUF              4096        /* réponse constatée : ~1,3 Ko */
+_Static_assert(OM_BUF <= HTTP_SHARED_BUF_LEN, "OM_BUF dépasse le tampon partagé");
 #define OM_TIMEOUT_MS       10000
 #define GTI_CENTER_OFFSET_S (-1800)     /* moyenne de l'heure précédente */
 
@@ -37,7 +38,6 @@ static const char *TAG = "forecast";
 static forecast_t s_fc;
 static StaticSemaphore_t s_mtx_buf;
 static SemaphoreHandle_t s_mtx;
-static char s_buf[OM_BUF];
 static cfg_t s_cfg;
 static TaskHandle_t s_task;
 static StaticTask_t s_task_buf;
@@ -93,14 +93,22 @@ static esp_err_t fetch(void)
     const http_req_t req = { .url = url, .tls = HTTP_TLS_BUNDLE, .timeout_ms = OM_TIMEOUT_MS };
     size_t len;
     int status;
-    esp_err_t err = http_get(&req, s_buf, sizeof(s_buf), &len, &status);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Open-Meteo : %s (HTTP %d)", esp_err_to_name(err), status);
-        return err;
+    if (!http_shared_lock()) {
+        ESP_LOGW(TAG, "Open-Meteo : tampon partagé occupé");
+        return ESP_ERR_TIMEOUT;
     }
     static forecast_t fc;      /* hors pile */
     memset(&fc, 0, sizeof(fc));
-    err = forecast_parse(s_buf, len, &fc);
+    esp_err_t err = http_get(&req, g_http_shared_buf, OM_BUF, &len, &status);
+    bool fetched = err == ESP_OK;
+    if (fetched) {
+        err = forecast_parse(g_http_shared_buf, len, &fc);
+    }
+    http_shared_unlock();
+    if (!fetched) {
+        ESP_LOGW(TAG, "Open-Meteo : %s (HTTP %d)", esp_err_to_name(err), status);
+        return err;
+    }
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "réponse Open-Meteo illisible");
         return err;

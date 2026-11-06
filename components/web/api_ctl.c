@@ -9,8 +9,10 @@ static const char *TAG = "web";
 
 /* Tampons statiques : tous les gestionnaires s'exécutent dans l'unique tâche httpd. */
 static control_status_t s_st;
-static ctl_log_t s_log[CONTROL_LOG_LEN];
-static char s_body[128];
+
+#define BODY_MAX    128
+
+_Static_assert(CONTROL_LOG_LEN * sizeof(ctl_log_t) <= WEB_SCRATCH_LEN, "journal plus grand que g_web_scratch");
 
 static const char *ovr_name(uint8_t o)
 {
@@ -22,8 +24,7 @@ static const char *ovr_name(uint8_t o)
 static esp_err_t plan_get(httpd_req_t *req)
 {
     control_status(&s_st);
-    static jw_t jw;
-    jw_t *w = &jw;
+    jw_t *w = &g_web_jw;
     jw_begin(w, req);
     jw_printf(w, "{\"running\":%s,\"observer\":%s,\"plan_valid\":%s,\"updated\":%lld,",
               s_st.running ? "true" : "false", s_st.observer ? "true" : "false",
@@ -63,13 +64,14 @@ static esp_err_t plan_get(httpd_req_t *req)
 
 static esp_err_t log_get(httpd_req_t *req)
 {
-    int n = control_log_read(s_log, CONTROL_LOG_LEN);
-    static jw_t jw;
-    jw_begin(&jw, req);
-    jw_printf(&jw, "{\"lines\":[");
+    ctl_log_t *log = (ctl_log_t *)g_web_scratch;
+    int n = control_log_read(log, CONTROL_LOG_LEN);
+    jw_t *w = &g_web_jw;
+    jw_begin(w, req);
+    jw_printf(w, "{\"lines\":[");
     for (int i = 0; i < n; i++) {
-        const ctl_log_t *e = &s_log[i];
-        jw_printf(&jw, "%s{\"t\":%lu,\"obs\":%s,\"relay\":%s,\"ce\":\"%s\",\"batt\":\"%s\",\"sp\":%d,"
+        const ctl_log_t *e = &log[i];
+        jw_printf(w, "%s{\"t\":%lu,\"obs\":%s,\"relay\":%s,\"ce\":\"%s\",\"batt\":\"%s\",\"sp\":%d,"
                        "\"grid\":%d,\"pbatt\":%d,\"avail\":%d,\"lim\":%u,\"mode\":\"%s\",\"hc\":%s,\"full\":%s,"
                        "\"fallback\":%s,\"soc\":",
                   i ? "," : "", (unsigned long)e->ts, (e->flags & CTL_F_OBSERVER) ? "true" : "false",
@@ -78,24 +80,25 @@ static esp_err_t log_get(httpd_req_t *req)
                   e->limits, planner_mode_name((ce_mode_t)e->mode), (e->flags & CTL_F_HC) ? "true" : "false",
                   (e->flags & CTL_F_FULL) ? "true" : "false", (e->flags & CTL_F_FALLBACK) ? "true" : "false");
         if (e->soc <= 100) {
-            jw_printf(&jw, "%u}", e->soc);
+            jw_printf(w, "%u}", e->soc);
         } else {
-            jw_printf(&jw, "null}");
+            jw_printf(w, "null}");
         }
     }
-    jw_printf(&jw, "]}");
-    return jw_end(&jw);
+    jw_printf(w, "]}");
+    return jw_end(w);
 }
 
 /* ---------- POST /api/override ---------- */
 
 static esp_err_t override_post(httpd_req_t *req)
 {
-    int n = web_read_body(req, s_body, sizeof(s_body));
+    char *body = (char *)g_web_scratch;
+    int n = web_read_body(req, body, BODY_MAX);
     if (n < 0) {
         return web_send_error(req, WEB_400, "corps invalide", NULL);
     }
-    cJSON *root = cJSON_ParseWithLength(s_body, (size_t)n);
+    cJSON *root = cJSON_ParseWithLength(body, (size_t)n);
     const cJSON *target = cJSON_GetObjectItemCaseSensitive(root, "target");
     const cJSON *mode = cJSON_GetObjectItemCaseSensitive(root, "mode");
     const cJSON *minutes = cJSON_GetObjectItemCaseSensitive(root, "minutes");

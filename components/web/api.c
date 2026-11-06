@@ -1,5 +1,7 @@
 #include <string.h>
 #include <time.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_check.h"
 #include "esp_timer.h"
@@ -18,14 +20,11 @@
 
 static const char *TAG = "web";
 
-#define BODY_MAX                4096
 #define HEAP_WARN_BYTES         (40 * 1024)
 #define NTP_LOST_ALERT_S        (24 * 3600)
 #define CHIP_REV_SECURE_BOOT_V2 300
 
 /* Tampons statiques : les gestionnaires s'exécutent tous dans l'unique tâche httpd. */
-static char s_body[BODY_MAX];
-static cfg_t s_cfg;
 
 /* ---------- GET /api/system ---------- */
 
@@ -89,14 +88,27 @@ static esp_err_t system_get(httpd_req_t *req)
         cJSON_AddStringToObject(r, "time", buf);
     }
 
-    config_get(&s_cfg);
+    /* Marge minimale de pile observée (octets jamais utilisés) : sert à dimensionner les piles. */
+    static const char *const tasks[] = {
+        "task_grid", "task_poll", "task_envoy", "task_regul", "task_act", "task_hist", "task_forecast",
+        "task_sys", "httpd", "tiT", "esp_timer", "sys_evt", "mdns",
+    };
+    cJSON *stk = cJSON_AddObjectToObject(r, "stack_free_min");
+    for (size_t i = 0; i < sizeof(tasks) / sizeof(tasks[0]) && stk != NULL; i++) {
+        TaskHandle_t t = xTaskGetHandle(tasks[i]);
+        if (t != NULL) {
+            cJSON_AddNumberToObject(stk, tasks[i], uxTaskGetStackHighWaterMark(t));
+        }
+    }
+
+    config_get(&g_web_cfg);
     cJSON_AddStringToObject(r, "cfg_status", config_status_str(config_status()));
-    cJSON_AddBoolToObject(r, "admin_set", s_cfg.sys.admin_pass[0] != '\0');
-    cJSON_AddBoolToObject(r, "tariff_configured", s_cfg.tariff.configured);
-    cJSON_AddBoolToObject(r, "observer", s_cfg.sys.observer);
-    cJSON_AddStringToObject(r, "hostname", s_cfg.sys.hostname);
-    cJSON_AddNumberToObject(r, "envoy_token_exp", (double)jwt_exp(s_cfg.dev.envoy_token));
-    cJSON_AddBoolToObject(r, "envoy_skip_cert", s_cfg.dev.envoy_fw7 && s_cfg.dev.envoy_skip_cert);
+    cJSON_AddBoolToObject(r, "admin_set", g_web_cfg.sys.admin_pass[0] != '\0');
+    cJSON_AddBoolToObject(r, "tariff_configured", g_web_cfg.tariff.configured);
+    cJSON_AddBoolToObject(r, "observer", g_web_cfg.sys.observer);
+    cJSON_AddStringToObject(r, "hostname", g_web_cfg.sys.hostname);
+    cJSON_AddNumberToObject(r, "envoy_token_exp", (double)jwt_exp(g_web_cfg.dev.envoy_token));
+    cJSON_AddBoolToObject(r, "envoy_skip_cert", g_web_cfg.dev.envoy_fw7 && g_web_cfg.dev.envoy_skip_cert);
     return web_send_json(req, r);
 }
 
@@ -111,14 +123,14 @@ static esp_err_t state_get(httpd_req_t *req)
 
 static esp_err_t config_get_handler(httpd_req_t *req)
 {
-    config_get(&s_cfg);
-    return web_send_json(req, cfg_to_json(&s_cfg));
+    config_get(&g_web_cfg);
+    return web_send_json(req, cfg_to_json(&g_web_cfg));
 }
 
 /* Lit et analyse le corps JSON ; en cas d'échec la réponse d'erreur est déjà envoyée. */
 static cJSON *read_json(httpd_req_t *req, esp_err_t *err)
 {
-    int n = web_read_body(req, s_body, sizeof(s_body));
+    int n = web_read_body(req, (char *)g_web_scratch, WEB_SCRATCH_LEN);
     if (n == -1) {
         *err = web_send_error(req, WEB_413, "corps trop volumineux", NULL);
         return NULL;
@@ -127,7 +139,7 @@ static cJSON *read_json(httpd_req_t *req, esp_err_t *err)
         *err = web_send_error(req, WEB_400, "lecture du corps impossible", NULL);
         return NULL;
     }
-    cJSON *root = cJSON_ParseWithLength(s_body, (size_t)n);
+    cJSON *root = cJSON_ParseWithLength((char *)g_web_scratch, (size_t)n);
     if (root == NULL || !cJSON_IsObject(root)) {
         cJSON_Delete(root);
         *err = web_send_error(req, WEB_400, "JSON invalide", NULL);
@@ -139,7 +151,7 @@ static cJSON *read_json(httpd_req_t *req, esp_err_t *err)
 static esp_err_t save_and_reply(httpd_req_t *req, bool reboot_required, bool *saved)
 {
     const char *bad = NULL;
-    esp_err_t err = config_save(&s_cfg, &bad);
+    esp_err_t err = config_save(&g_web_cfg, &bad);
     *saved = (err == ESP_OK);
     if (err == ESP_ERR_INVALID_ARG) {
         return web_send_error(req, WEB_400, "valeur invalide", bad);
@@ -170,23 +182,23 @@ static esp_err_t config_post_handler(httpd_req_t *req)
         return err;
     }
 
-    config_get(&s_cfg);
+    config_get(&g_web_cfg);
     cfg_sys_t old_sys;
-    memcpy(&old_sys, &s_cfg.sys, sizeof(old_sys));
-    cfg_pv_t old_pv = s_cfg.pv;
-    const char *bad = cfg_from_json(root, &s_cfg);
+    memcpy(&old_sys, &g_web_cfg.sys, sizeof(old_sys));
+    cfg_pv_t old_pv = g_web_cfg.pv;
+    const char *bad = cfg_from_json(root, &g_web_cfg);
     cJSON_Delete(root);
     if (bad != NULL) {
         return web_send_error(req, WEB_400, "valeur invalide", bad);
     }
 
-    bool reboot = strcmp(old_sys.wifi_ssid, s_cfg.sys.wifi_ssid) != 0 ||
-                  strcmp(old_sys.wifi_pass, s_cfg.sys.wifi_pass) != 0 ||
-                  strcmp(old_sys.hostname, s_cfg.sys.hostname) != 0;
+    bool reboot = strcmp(old_sys.wifi_ssid, g_web_cfg.sys.wifi_ssid) != 0 ||
+                  strcmp(old_sys.wifi_pass, g_web_cfg.sys.wifi_pass) != 0 ||
+                  strcmp(old_sys.hostname, g_web_cfg.sys.hostname) != 0;
     memset(&old_sys, 0, sizeof(old_sys));
     bool saved;
     err = save_and_reply(req, reboot, &saved);
-    if (saved && memcmp(&old_pv, &s_cfg.pv, sizeof(old_pv)) != 0) {
+    if (saved && memcmp(&old_pv, &g_web_cfg.pv, sizeof(old_pv)) != 0) {
         forecast_refresh();     /* coordonnées ou orientation modifiées */
     }
     if (saved && reboot) {
@@ -212,8 +224,8 @@ static esp_err_t setup_post_handler(httpd_req_t *req)
         return err;
     }
 
-    config_get(&s_cfg);
-    cfg_sys_t *s = &s_cfg.sys;
+    config_get(&g_web_cfg);
+    cfg_sys_t *s = &g_web_cfg.sys;
     const char *bad = NULL;
     if (!json_get_str(root, "wifi_ssid", s->wifi_ssid, sizeof(s->wifi_ssid), false)) {
         bad = "sys.wifi_ssid";

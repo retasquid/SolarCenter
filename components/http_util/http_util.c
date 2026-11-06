@@ -15,13 +15,14 @@ static const char *TAG = "http_util";
 
 SemaphoreHandle_t g_tls_mutex;
 static StaticSemaphore_t s_tls_mutex_buf;
+char g_http_shared_buf[HTTP_SHARED_BUF_LEN];
 
 esp_err_t http_util_init(void)
 {
     /* Nos pilotes journalisent le premier échec d'une série : inutile de répéter chaque délai dépassé. */
     esp_log_level_set("HTTP_CLIENT", ESP_LOG_ERROR);
     esp_log_level_set("esp-tls", ESP_LOG_ERROR);
-    g_tls_mutex = xSemaphoreCreateMutexStatic(&s_tls_mutex_buf);
+    g_tls_mutex = xSemaphoreCreateRecursiveMutexStatic(&s_tls_mutex_buf);
     return g_tls_mutex != NULL ? ESP_OK : ESP_FAIL;
 }
 
@@ -114,7 +115,7 @@ static esp_err_t request(const http_req_t *req, const char *body, char *buf, siz
         return ESP_ERR_INVALID_ARG;
     }
     bool tls = req->tls != HTTP_TLS_NONE;
-    if (tls && xSemaphoreTake(g_tls_mutex, pdMS_TO_TICKS(TLS_MUTEX_WAIT_MS)) != pdTRUE) {
+    if (tls && !http_shared_lock()) {
         ESP_LOGW(TAG, "session TLS occupée");
         return ESP_ERR_TIMEOUT;
     }
@@ -129,12 +130,22 @@ static esp_err_t request(const http_req_t *req, const char *body, char *buf, siz
     }
 
     if (tls) {
-        xSemaphoreGive(g_tls_mutex);
+        http_shared_unlock();
     }
     if (err != ESP_OK) {
         ESP_LOGD(TAG, "%s %s : %s (HTTP %d)", body ? "POST" : "GET", req->url, esp_err_to_name(err), *status);
     }
     return err;
+}
+
+bool http_shared_lock(void)
+{
+    return xSemaphoreTakeRecursive(g_tls_mutex, pdMS_TO_TICKS(TLS_MUTEX_WAIT_MS)) == pdTRUE;
+}
+
+void http_shared_unlock(void)
+{
+    xSemaphoreGiveRecursive(g_tls_mutex);
 }
 
 esp_err_t http_get(const http_req_t *req, char *buf, size_t cap, size_t *len, int *status)

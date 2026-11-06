@@ -28,7 +28,6 @@ static const char *TAG = "ota";
 #define HEAD_LEN        (APP_DESC_OFFSET + sizeof(esp_app_desc_t))
 
 /* Tampons statiques : les gestionnaires s'exécutent tous dans l'unique tâche httpd. */
-static char s_buf[2048];
 static char s_path[sizeof(WWW_DIR) + WWW_NAME_MAX + 8];
 static char s_tmp[sizeof(s_path)];
 
@@ -104,20 +103,20 @@ static esp_err_t ota_post(httpd_req_t *req)
     /* Début de l'image vérifié avant toute écriture en flash. */
     size_t head = 0;
     while (head < HEAD_LEN) {
-        int r = recv_some(req, s_buf + head, sizeof(s_buf) - head);
+        int r = recv_some(req, (char *)g_web_scratch + head, WEB_SCRATCH_LEN - head);
         if (r <= 0) {
             return web_send_error(req, WEB_400, "réception interrompue", NULL);
         }
         head += (size_t)r;
     }
-    const char *bad = check_image(s_buf, head);
+    const char *bad = check_image((const char *)g_web_scratch, head);
     if (bad != NULL) {
         ESP_LOGW(TAG, "image refusée : %s", bad);
         return web_send_error(req, WEB_400, bad, NULL);
     }
 
     /* Aucune session TLS (Envoy, Open-Meteo, ~40 Ko de heap) pendant l'écriture. */
-    if (xSemaphoreTake(g_tls_mutex, pdMS_TO_TICKS(OTA_TLS_WAIT_MS)) != pdTRUE) {
+    if (xSemaphoreTakeRecursive(g_tls_mutex, pdMS_TO_TICKS(OTA_TLS_WAIT_MS)) != pdTRUE) {
         return web_send_error(req, WEB_503, "session TLS en cours, réessayer", NULL);
     }
     ESP_LOGW(TAG, "mise à jour du firmware vers %s (%u octets), heap %u o", part->label,
@@ -127,7 +126,7 @@ static esp_err_t ota_post(httpd_req_t *req)
     err = esp_ota_begin(part, OTA_WITH_SEQUENTIAL_WRITES, &h);
     if (err != ESP_OK) {
         sysmon_set_ota_active(false);
-        xSemaphoreGive(g_tls_mutex);
+        xSemaphoreGiveRecursive(g_tls_mutex);
         ESP_LOGE(TAG, "esp_ota_begin : %s", esp_err_to_name(err));
         return web_send_error(req, WEB_500, "écriture en flash impossible", NULL);
     }
@@ -136,7 +135,7 @@ static esp_err_t ota_post(httpd_req_t *req)
     size_t next_log = OTA_LOG_STEP;
     bool low_heap = false;
     while (err == ESP_OK) {
-        err = esp_ota_write(h, s_buf, chunk);
+        err = esp_ota_write(h, g_web_scratch, chunk);
         done += chunk;
         if (err != ESP_OK || done >= req->content_len) {
             break;
@@ -154,7 +153,7 @@ static esp_err_t ota_post(httpd_req_t *req)
         }
         vTaskDelay(1);      /* laisse tourner les tâches de priorité inférieure (watchdog de l'idle) */
         size_t want = req->content_len - done;
-        int r = recv_some(req, s_buf, want < sizeof(s_buf) ? want : sizeof(s_buf));
+        int r = recv_some(req, (char *)g_web_scratch, want < WEB_SCRATCH_LEN ? want : WEB_SCRATCH_LEN);
         if (r <= 0) {
             err = ESP_FAIL;
             break;
@@ -166,7 +165,7 @@ static esp_err_t ota_post(httpd_req_t *req)
                  (unsigned)esp_get_free_heap_size());
         esp_ota_abort(h);
         sysmon_set_ota_active(false);
-        xSemaphoreGive(g_tls_mutex);
+        xSemaphoreGiveRecursive(g_tls_mutex);
         return web_send_error(req, low_heap ? WEB_503 : WEB_400,
                               low_heap ? "mémoire insuffisante, firmware actuel conservé"
                                        : "réception ou écriture interrompue, firmware actuel conservé", NULL);
@@ -176,7 +175,7 @@ static esp_err_t ota_post(httpd_req_t *req)
         err = esp_ota_set_boot_partition(part);
     }
     sysmon_set_ota_active(false);
-    xSemaphoreGive(g_tls_mutex);
+    xSemaphoreGiveRecursive(g_tls_mutex);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "image invalide : %s", esp_err_to_name(err));
         return web_send_error(req, WEB_400, "image invalide, firmware actuel conservé", NULL);
@@ -245,8 +244,8 @@ static esp_err_t www_post(httpd_req_t *req)
     bool ok = true;
     while (done < req->content_len) {
         size_t want = req->content_len - done;
-        int r = recv_some(req, s_buf, want < sizeof(s_buf) ? want : sizeof(s_buf));
-        if (r <= 0 || fwrite(s_buf, 1, (size_t)r, f) != (size_t)r) {
+        int r = recv_some(req, (char *)g_web_scratch, want < WEB_SCRATCH_LEN ? want : WEB_SCRATCH_LEN);
+        if (r <= 0 || fwrite(g_web_scratch, 1, (size_t)r, f) != (size_t)r) {
             ok = false;
             break;
         }

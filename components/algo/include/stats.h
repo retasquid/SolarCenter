@@ -42,6 +42,32 @@ bool stats_integrate(energy_acc_t *acc, const flows_in_t *prev, const flows_in_t
 
 void stats_add(energy_acc_t *dst, const energy_acc_t *src);
 
+/* ---------- Trous de mesure de l'Envoy ----------
+ * Pendant une coupure de l'Envoy, le Shelly, le SolarFlow et le chauffe-eau continuent de mesurer.
+ * Au retour, le compteur cumulé de l'Envoy donne l'énergie PV de la coupure : on reconstitue alors
+ * la maison, les flux et les contrefactuels sur les totaux de la période. */
+typedef struct {
+    float   e_import;       /* Wh, mesurés pendant le trou */
+    float   e_export;
+    float   e_batt_ch;
+    float   e_batt_dis;
+    float   e_ce;
+    float   buy_eur;        /* Σ import × prix d'achat (= coût d'achat réel de la période) */
+    float   price_secs;     /* Σ prix d'achat × dt : prix moyen de la période */
+    float   price_hc_secs;
+    float   secs;
+    uint8_t batt_bad;       /* SolarFlow inconnu pendant une partie du trou : maison non reconstituable */
+} gap_acc_t;
+
+/* Intègre un pas sans PV (p_pv ignoré). batt_ok = faux : la batterie est inconnue sur ce pas. */
+void stats_gap_integrate(gap_acc_t *g, const flows_in_t *prev, const flows_in_t *cur, float dt_s,
+                         bool batt_ok, float price_buy, float price_hc);
+
+/* Énergies et corrections de coûts à ajouter (dans *d, remis à zéro) pour e_pv Wh produits pendant le trou.
+ * Les coûts réels sont déjà comptés ; c_no_batt et c_no_install, comptés neutres pendant le trou,
+ * sont corrigés. secs_full n'est pas touché : la période reste « incomplète » (pas d'apprentissage). */
+void stats_gap_fill(const gap_acc_t *g, float e_pv, float price_sell, energy_acc_t *d);
+
 /* coût_usure = prix / (cycles × capacité utile), €/kWh ; 0 si non renseigné. */
 float stats_wear_cost(float batt_price, float cycles, float capa_kwh);
 

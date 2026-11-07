@@ -55,6 +55,32 @@ static tariff_t s_tariff;
 static float s_kwc = 1.0f;
 static bool s_pv_configured;
 
+static bool s_slot_rebuilt;             /* créneau en cours complété par une reconstitution */
+static bool s_pending_rebuilt;
+
+/* Coupures de l'Envoy (s_mtx) : mesures du trou par créneau, reconstituées au retour avec le
+ * compteur cumulé de l'Envoy (stats_gap_fill). */
+#define GAP_SLOTS_MAX       24          /* 12 h : au-delà, la coupure n'est pas reconstituée */
+#define GAP_NEG_TOL_WH      50.0f       /* compteur légèrement en retard : écart ramené à 0 */
+typedef struct {
+    uint32_t  start;
+    gap_acc_t g;
+} gap_slot_t;
+static gap_slot_t s_gap[GAP_SLOTS_MAX]; /* [s_gap_n - 1] = créneau en cours */
+static int s_gap_n;
+static bool s_gap_active;
+static bool s_gap_overflow;
+static uint32_t s_gap_since;
+static bool s_gap_req;                  /* reconstitution à faire par task_hist (s_gap figé) */
+static float s_gap_req_wh;
+static bool s_prev_pv_ok;
+static bool s_counter_ok;               /* dernière lecture du compteur de l'Envoy */
+static bool s_counter_eim;
+static uint32_t s_counter_wh;
+static uint32_t s_counter_ms;
+static float s_pv_since_counter;        /* Wh PV intégrés normalement depuis cette lecture */
+static hist_gap_info_t s_gap_info;
+
 /* Modèles (s_model_mtx) */
 static rls_t s_rls_pv;
 static rls_t s_rls_base;
@@ -292,12 +318,69 @@ static void rollover_locked(int64_t now)
     s_pending = s_slot;
     s_pending_start = s_slot_start;
     s_pending_soc = s_soc;
+    s_pending_rebuilt = s_slot_rebuilt;
     s_pending_valid = true;
     memset(&s_slot, 0, sizeof(s_slot));
+    s_slot_rebuilt = false;
     s_slot_start = start;
     if (s_task != NULL) {
         xTaskNotifyGive(s_task);
     }
+}
+
+/* Pas d'intégration pendant une coupure de l'Envoy (s_mtx tenu). */
+static void gap_step_locked(const flows_in_t *in, float dt, bool batt_ok, float price, float price_hc,
+                            uint32_t now)
+{
+    if (s_gap_req) {
+        return;     /* reconstitution précédente pas encore appliquée : rare, ce pas est perdu */
+    }
+    if (!s_gap_active) {
+        s_gap_active = true;
+        s_gap_overflow = false;
+        s_gap_n = 0;
+        s_gap_since = now;
+    }
+    if (s_gap_n == 0 || s_gap[s_gap_n - 1].start != s_slot_start) {
+        if (s_gap_n == GAP_SLOTS_MAX) {
+            s_gap_overflow = true;
+            return;
+        }
+        memset(&s_gap[s_gap_n], 0, sizeof(s_gap[0]));
+        s_gap[s_gap_n].start = s_slot_start;
+        s_gap_n++;
+    }
+    stats_gap_integrate(&s_gap[s_gap_n - 1].g, &s_prev, in, dt, batt_ok, price, price_hc);
+}
+
+/* Nouvelle lecture du compteur de l'Envoy : clôt une coupure en cours (s_mtx tenu). */
+static void counter_read_locked(const app_state_t *st, uint32_t ms)
+{
+    bool same = s_counter_ok && s_counter_eim == st->pv_from_eim;
+    if (s_gap_active && !s_gap_req) {
+        float hours = (float)(ms - s_counter_ms) / 3.6e6f;
+        float max_wh = s_kwc * 1000.0f * 1.2f * hours + GAP_NEG_TOL_WH;
+        float delta = same ? (float)((int64_t)st->pv_wh_lifetime - (int64_t)s_counter_wh) - s_pv_since_counter : NAN;
+        if (!same || s_gap_overflow || !(delta > -GAP_NEG_TOL_WH && delta < max_wh)) {
+            ESP_LOGW(TAG, "coupure de l'Envoy non reconstituée (%s, écart %.0f Wh)",
+                     !same ? "compteur précédent absent" : s_gap_overflow ? "plus de 12 h" : "compteur incohérent",
+                     (double)delta);
+            s_gap_info.dropped++;
+            s_gap_n = 0;
+        } else {
+            s_gap_req = true;
+            s_gap_req_wh = delta > 0.0f ? delta : 0.0f;
+            if (s_task != NULL) {
+                xTaskNotifyGive(s_task);
+            }
+        }
+        s_gap_active = false;
+    }
+    s_counter_ok = true;
+    s_counter_eim = st->pv_from_eim;
+    s_counter_wh = st->pv_wh_lifetime;
+    s_counter_ms = ms;
+    s_pv_since_counter = 0.0f;
 }
 
 void history_on_sample(const app_state_t *st)
@@ -308,6 +391,8 @@ void history_on_sample(const app_state_t *st)
     flows_in_t in;
     bool full;
     bool grid_ok = app_state_flows_in(st, &in, &full);
+    bool pv_ok = app_state_usable(st, DEV_ENVOY, &st->p_pv);
+    bool batt_ok = !st->dev[DEV_ZENDURE].configured || app_state_usable(st, DEV_ZENDURE, &st->p_batt);
     uint32_t ms = st->p_grid.ts_ms;
     int64_t now = time(NULL);
     tariff_day_t day;
@@ -324,15 +409,28 @@ void history_on_sample(const app_state_t *st)
                 ? s_tariff.grid_price[tariff_high_season(&s_tariff, day.month)]
                                      [tariff_is_weekend(&s_tariff, &day)][TARIFF_HC]
                 : s_tariff.price_hc;
-            stats_integrate(&s_slot, &s_prev, &in, dt, full && s_prev_full, tariff_price_at(&s_tariff, &day, minute),
-                            s_tariff.price_sell, price_hc);
+            float price = tariff_price_at(&s_tariff, &day, minute);
+            float pv_before = s_slot.e_pv;
+            stats_integrate(&s_slot, &s_prev, &in, dt, full && s_prev_full, price, s_tariff.price_sell, price_hc);
+            s_pv_since_counter += s_slot.e_pv - pv_before;
+            /* Coupure seulement après une première lecture du compteur (référence de l'écart). */
+            if (s_pv_configured && s_counter_ok && (!pv_ok || !s_prev_pv_ok)) {
+                gap_step_locked(&in, dt, batt_ok, price, price_hc, (uint32_t)now);
+            }
         }
         s_prev = in;
         s_prev_ms = ms;
         s_prev_full = full;
+        s_prev_pv_ok = pv_ok;
         s_prev_valid = true;
     } else if (!grid_ok) {
         s_prev_valid = false;
+    }
+    /* Une lecture de l'Envoy toutes les 10 s : son horodatage change à chaque nouveau compteur. */
+    static uint32_t s_pv_ts_seen;
+    if (pv_ok && st->pv_wh_valid && st->p_pv.ts_ms != s_pv_ts_seen) {
+        s_pv_ts_seen = st->p_pv.ts_ms;
+        counter_read_locked(st, st->p_pv.ts_ms);
     }
     if (app_state_usable(st, DEV_ZENDURE, &st->soc)) {
         s_soc = (uint8_t)lroundf(st->soc.value);
@@ -438,7 +536,7 @@ static uint8_t cover_pct(float secs)
     return (uint8_t)(pct > 100.0f ? 100.0f : (pct < 0.0f ? 0.0f : pct));
 }
 
-static void finalize_slot(uint32_t start, const energy_acc_t *acc, uint8_t soc)
+static void finalize_slot(uint32_t start, const energy_acc_t *acc, uint8_t soc, bool rebuilt)
 {
     hist_pred_t p;
     xSemaphoreTake(s_model_mtx, portMAX_DELAY);
@@ -460,6 +558,7 @@ static void finalize_slot(uint32_t start, const energy_acc_t *acc, uint8_t soc)
         .soc = soc,
         .cov_grid = cover_pct(acc->secs_grid),
         .cov_full = cover_pct(acc->secs_full),
+        .flags = rebuilt ? HIST_SLOT_REBUILT : 0,
     };
     xSemaphoreTake(s_file_mtx, portMAX_DELAY);
     esp_err_t err = file_write_at(SLOTS_FILE, slot_off(start), &rec, sizeof(rec));
@@ -505,6 +604,115 @@ static void finalize_slot(uint32_t start, const energy_acc_t *acc, uint8_t soc)
     write_day(date, &today);
     ESP_LOGI(TAG, "créneau clos : PV %.0f Wh, maison %.0f Wh, couverture %u %%",
              acc->e_pv, acc->e_home, rec.cov_full);
+}
+
+/* ---------- Reconstitution des coupures de l'Envoy ---------- */
+
+/* Ajoute d à un créneau déjà écrit, à sa journée et, si elle est close, à son mois. */
+static void patch_closed_slot(uint32_t start, const energy_acc_t *d)
+{
+    hist_slot_t rec;
+    xSemaphoreTake(s_file_mtx, portMAX_DELAY);
+    if (read_one(SLOTS_FILE, slot_off(start), &rec, sizeof(rec)) && rec.ts == start) {
+        rec.e_pv += d->e_pv;
+        rec.e_home += d->e_home;
+        rec.e_batt_ch += d->e_batt_ch;
+        rec.e_batt_dis += d->e_batt_dis;
+        rec.e_ce += d->e_ce;
+        rec.flags |= HIST_SLOT_REBUILT;
+        if (file_write_at(SLOTS_FILE, slot_off(start), &rec, sizeof(rec)) != ESP_OK) {
+            ESP_LOGE(TAG, "créneau %lu : reconstitution non écrite", (unsigned long)start);
+        }
+    }
+    xSemaphoreGive(s_file_mtx);
+
+    uint32_t date = history_date_of(start);
+    static energy_acc_t today;
+    bool is_today = false;
+    xSemaphoreTake(s_mtx, portMAX_DELAY);
+    if (s_today_date == date) {
+        stats_add(&s_today, d);
+        today = s_today;
+        is_today = true;
+    }
+    xSemaphoreGive(s_mtx);
+    if (is_today) {
+        write_day(date, &today);
+        return;
+    }
+    /* Journée déjà close (coupure à cheval sur minuit) : jour et mois corrigés sur place. */
+    hist_day_t day;
+    xSemaphoreTake(s_file_mtx, portMAX_DELAY);
+    bool ok = read_one(DAYS_FILE, day_off(date), &day, sizeof(day)) && day.date == date;
+    xSemaphoreGive(s_file_mtx);
+    if (!ok) {
+        return;
+    }
+    stats_add(&day.acc, d);
+    write_day(date, &day.acc);
+    uint32_t ym = date / 100;
+    long off = month_off(ym);
+    hist_month_t m;
+    xSemaphoreTake(s_file_mtx, portMAX_DELAY);
+    if (off >= 0 && read_one(MONTHS_FILE, off, &m, sizeof(m)) && m.month == ym) {
+        stats_add(&m.acc, d);
+        if (file_write_at(MONTHS_FILE, off, &m, sizeof(m)) != ESP_OK) {
+            ESP_LOGE(TAG, "mois %lu : reconstitution non écrite", (unsigned long)ym);
+        }
+    }
+    xSemaphoreGive(s_file_mtx);
+}
+
+/* Répartit le PV de la coupure entre ses créneaux, au prorata de l'irradiance prévue × durée,
+ * puis complète chacun (task_hist, après la clôture du créneau en attente). */
+static void apply_gap(void)
+{
+    float total_wh = s_gap_req_wh;
+    float weight[GAP_SLOTS_MAX];
+    float w_sum = 0.0f, secs = 0.0f;
+    for (int i = 0; i < s_gap_n; i++) {
+        float gti = 0.0f, temp;
+        bool fc = forecast_at((int64_t)s_gap[i].start + HIST_SLOT_S / 2, &gti, &temp);
+        weight[i] = (fc && gti > 0.0f ? gti : 0.0f) * s_gap[i].g.secs;
+        w_sum += weight[i];
+        secs += s_gap[i].g.secs;
+    }
+    for (int i = 0; i < s_gap_n; i++) {
+        float share = w_sum > 0.0f ? weight[i] / w_sum : (secs > 0.0f ? s_gap[i].g.secs / secs : 0.0f);
+        static energy_acc_t d;
+        stats_gap_fill(&s_gap[i].g, total_wh * share, s_tariff.price_sell, &d);
+        bool open = false;
+        xSemaphoreTake(s_mtx, portMAX_DELAY);
+        if (s_gap[i].start == s_slot_start) {
+            stats_add(&s_slot, &d);     /* créneau en cours : écrit à sa clôture */
+            s_slot_rebuilt = true;
+            open = true;
+        }
+        xSemaphoreGive(s_mtx);
+        if (!open) {
+            patch_closed_slot(s_gap[i].start, &d);
+        }
+    }
+    xSemaphoreTake(s_mtx, portMAX_DELAY);
+    s_gap_info.last_ts = (uint32_t)time(NULL);
+    s_gap_info.last_pv_wh = total_wh;
+    s_gap_info.last_hours = secs / 3600.0f;
+    s_gap_info.count++;
+    int n = s_gap_n;
+    s_gap_n = 0;
+    s_gap_req = false;
+    xSemaphoreGive(s_mtx);
+    ESP_LOGI(TAG, "coupure de l'Envoy reconstituée : %.0f Wh de PV sur %.1f h (%d créneaux)",
+             (double)total_wh, (double)(secs / 3600.0f), n);
+}
+
+void history_gap_info(hist_gap_info_t *out)
+{
+    xSemaphoreTake(s_mtx, portMAX_DELAY);
+    *out = s_gap_info;
+    out->active = s_gap_active;
+    out->active_since = s_gap_active ? s_gap_since : 0;
+    xSemaphoreGive(s_mtx);
 }
 
 /* Reprend les énergies du jour enregistrées avant un redémarrage. */
@@ -561,6 +769,7 @@ static void hist_task(void *arg)
         static energy_acc_t acc;
         uint32_t start = 0;
         uint8_t soc = SOC_UNKNOWN;
+        bool rebuilt = false;
         xSemaphoreTake(s_mtx, portMAX_DELAY);
         rollover_locked(now);       /* clôt aussi les créneaux sans mesure */
         bool pending = s_pending_valid;
@@ -568,12 +777,21 @@ static void hist_task(void *arg)
             acc = s_pending;
             start = s_pending_start;
             soc = s_pending_soc;
+            rebuilt = s_pending_rebuilt;
             s_pending_valid = false;
         }
         xSemaphoreGive(s_mtx);
 
         if (pending) {
-            finalize_slot(start, &acc, soc);
+            finalize_slot(start, &acc, soc, rebuilt);
+            esp_task_wdt_reset();
+        }
+        /* s_gap est figé tant que s_gap_req est vrai : lecture sans verrou. */
+        xSemaphoreTake(s_mtx, portMAX_DELAY);
+        bool gap = s_gap_req && !s_pending_valid;
+        xSemaphoreGive(s_mtx);
+        if (gap) {
+            apply_gap();
             esp_task_wdt_reset();
         }
     }

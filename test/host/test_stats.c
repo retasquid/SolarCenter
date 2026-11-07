@@ -200,6 +200,74 @@ static void test_roi_partial_month_extrapolated(void)
     TEST_ASSERT_FLOAT_WITHIN(0.01f, expected, r.annual_gain);
 }
 
+/* Une heure à puissances constantes, Envoy muet puis reconstitué : mêmes résultats que si tout était mesuré. */
+static void check_gap_equivalence(flows_in_t in, float price)
+{
+    energy_acc_t full = { 0 }, gap = { 0 };
+    gap_acc_t g = { 0 };
+    flows_in_t no_pv = in;
+    no_pv.p_pv = 0.0f;
+    for (int t = 0; t < 3600; t += 2) {
+        stats_integrate(&full, &in, &in, 2.0f, true, price, SELL, HC);
+        stats_integrate(&gap, &no_pv, &no_pv, 2.0f, false, price, SELL, HC);
+        stats_gap_integrate(&g, &no_pv, &no_pv, 2.0f, true, price, HC);
+    }
+    energy_acc_t d;
+    stats_gap_fill(&g, in.p_pv, SELL, &d);      /* 1 h à p_pv W = p_pv Wh */
+    stats_add(&gap, &d);
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, full.e_pv, gap.e_pv);
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, full.e_home, gap.e_home);
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, full.e_batt_ch, gap.e_batt_ch);
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, full.e_batt_dis, gap.e_batt_dis);
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, full.e_ce, gap.e_ce);
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, full.e_ce_local, gap.e_ce_local);
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, full.e_pv_home, gap.e_pv_home);
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, full.e_pv_batt, gap.e_pv_batt);
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, full.e_pv_grid, gap.e_pv_grid);
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, full.e_grid_home, gap.e_grid_home);
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, full.e_grid_batt, gap.e_grid_batt);
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, full.e_batt_home, gap.e_batt_home);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, full.c_real, gap.c_real);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, full.c_no_batt, gap.c_no_batt);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, full.c_no_install, gap.c_no_install);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, full.hc_ce_value, gap.hc_ce_value);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, gap.secs_full);       /* reste « incomplet » : pas d'apprentissage */
+}
+
+static void test_gap_sunny_export_and_charge(void)
+{
+    /* PV 2000 W, maison 1500 W dont chauffe-eau 1000 W, batterie en charge 300 W, export 200 W. */
+    check_gap_equivalence((flows_in_t){ .p_pv = 2000, .p_grid = -200, .p_batt = -300, .p_ce = 1000 }, HP);
+}
+
+static void test_gap_evening_discharge(void)
+{
+    /* Pas de PV, batterie 400 W vers la maison, import 600 W. */
+    check_gap_equivalence((flows_in_t){ .p_pv = 0, .p_grid = 600, .p_batt = 400, .p_ce = 0 }, HP);
+}
+
+static void test_gap_charge_from_grid(void)
+{
+    /* PV 500 W, batterie en charge 800 W (dont 300 W du réseau), maison 0 W. */
+    check_gap_equivalence((flows_in_t){ .p_pv = 500, .p_grid = 300, .p_batt = -800, .p_ce = 0 }, HC);
+}
+
+/* SolarFlow inconnu pendant le trou : seul le PV est ajouté, la maison et les gains restent neutres. */
+static void test_gap_battery_unknown_adds_pv_only(void)
+{
+    gap_acc_t g = { 0 };
+    flows_in_t in = { .p_grid = -200 };
+    stats_gap_integrate(&g, &in, &in, 2.0f, true, HP, HC);
+    stats_gap_integrate(&g, &in, &in, 2.0f, false, HP, HC);
+    energy_acc_t d;
+    stats_gap_fill(&g, 300.0f, SELL, &d);
+    TEST_ASSERT_EQUAL_FLOAT(300.0f, d.e_pv);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, d.e_home);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, d.c_no_install);
+    stats_gap_fill(&g, -5.0f, SELL, &d);        /* compteur incohérent : jamais négatif */
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, d.e_pv);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -215,5 +283,9 @@ int main(void)
     RUN_TEST(test_roi_three_months_observed);
     RUN_TEST(test_roi_thirteen_months_is_not_estimate);
     RUN_TEST(test_roi_partial_month_extrapolated);
+    RUN_TEST(test_gap_sunny_export_and_charge);
+    RUN_TEST(test_gap_evening_discharge);
+    RUN_TEST(test_gap_charge_from_grid);
+    RUN_TEST(test_gap_battery_unknown_adds_pv_only);
     return UNITY_END();
 }

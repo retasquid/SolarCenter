@@ -118,6 +118,9 @@ cJSON *state_to_json(void)
     cJSON *pv = add_meas(r, "pv", &st.p_pv, &dv[DEV_ENVOY], now);
     if (pv != NULL) {
         cJSON_AddBoolToObject(pv, "eim", st.pv_from_eim);
+        if (st.pv_wh_valid) {
+            cJSON_AddNumberToObject(pv, "wh_lifetime", st.pv_wh_lifetime);
+        }
     }
     cJSON *batt = add_meas(r, "batt", &st.p_batt, &dv[DEV_ZENDURE], now);
     if (batt != NULL) {

@@ -80,7 +80,8 @@ static bool csv_slot(const hist_slot_t *s, void *arg)
     csv_num(w, s->soc <= 100 ? (float)s->soc : NAN, 0, false);
     csv_num(w, (float)s->cov_full, 0, false);
     csv_num(w, s->pv_pred, 0, false);
-    csv_num(w, s->base_pred, 0, true);
+    csv_num(w, s->base_pred, 0, false);
+    jw_printf(w, "%s\r\n", (s->flags & HIST_SLOT_REBUILT) ? "oui" : "");
     return w->err == ESP_OK;
 }
 
@@ -135,7 +136,7 @@ static esp_err_t export_get(httpd_req_t *req)
         }
     } else {
         jw_printf(w, "debut;pv_wh;maison_wh;chauffe_eau_wh;import_wh;export_wh;charge_wh;decharge_wh;soc_pct;"
-                     "couverture_pct;pv_prevu_wh;base_prevue_wh\r\n");
+                     "couverture_pct;pv_prevu_wh;base_prevue_wh;pv_reconstitue\r\n");
         uint32_t last = slot_start(time(NULL)) - HIST_SLOT_S;
         history_foreach_slot(last - (uint32_t)(SLOTS_7D - 1) * HIST_SLOT_S, last, csv_slot, w);
     }

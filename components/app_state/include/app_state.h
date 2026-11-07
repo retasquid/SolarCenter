@@ -49,6 +49,8 @@ typedef struct {
     float  p_grid_phase[3];
     bool   grid_mono;           /* Shelly lu en profil monophasé (EM1) */
     bool   pv_from_eim;         /* faux : repli sur la production des micro-onduleurs */
+    bool   pv_wh_valid;         /* compteur cumulé de l'Envoy lu avec p_pv */
+    uint32_t pv_wh_lifetime;    /* Wh, même source que p_pv (eim ou micro-onduleurs) */
     bool   ce_relay_on;
     zendure_info_t zendure;
     dev_status_t dev[DEV_COUNT];

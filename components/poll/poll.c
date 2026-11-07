@@ -155,6 +155,8 @@ static void poll_device(const cfg_t *cfg, dev_id_t id, uint32_t now)
             float w = (r.w_now < 0.0f && r.w_now > -PV_NEG_TOLERANCE_W) ? 0.0f : r.w_now;
             set_meas(&st->p_pv, w, QTY_PV, cfg->pv.kwc, now, "p_pv");
             st->pv_from_eim = r.from_eim;
+            st->pv_wh_valid = r.wh_valid && st->p_pv.valid;
+            st->pv_wh_lifetime = r.wh_lifetime;
         }
         account(st, id, err, now);
         app_state_unlock();

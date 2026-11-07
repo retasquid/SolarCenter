@@ -124,7 +124,7 @@ régulateur, et **mise à jour**.
 |---|---|
 | Démarrage | Batterie au repos, chauffe-eau en heures creuses uniquement, attente de l'heure et du compteur |
 | Compteur Shelly muet plus de 30 s | Batterie au repos, chauffe-eau coupé hors heures creuses |
-| Envoy muet | La régulation continue (le Shelly suffit) ; prévisions figées |
+| Envoy muet | La régulation continue (le Shelly suffit) ; prévisions figées. À son retour, la production de la coupure est retrouvée grâce à son compteur cumulé (jusqu'à 12 h de coupure) et les statistiques sont complétées |
 | SolarFlow muet | Chauffe-eau seulement sur un surplus réellement mesuré |
 | Mémoire basse | Mise au repos des appareils puis redémarrage contrôlé |
 | Mise à jour | Mise au repos des appareils avant le redémarrage |

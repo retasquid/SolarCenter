@@ -75,6 +75,77 @@ void stats_add(energy_acc_t *dst, const energy_acc_t *src)
     }
 }
 
+void stats_gap_integrate(gap_acc_t *g, const flows_in_t *prev, const flows_in_t *cur, float dt_s,
+                         bool batt_ok, float price_buy, float price_hc)
+{
+    if (!(dt_s > 0.0f && dt_s <= STATS_MAX_DT_S)) {
+        return;
+    }
+    float e_imp = trap(pos(prev->p_grid), pos(cur->p_grid), dt_s);
+    g->e_import += e_imp;
+    g->e_export += trap(pos(-prev->p_grid), pos(-cur->p_grid), dt_s);
+    g->e_batt_ch += trap(pos(-prev->p_batt), pos(-cur->p_batt), dt_s);
+    g->e_batt_dis += trap(pos(prev->p_batt), pos(cur->p_batt), dt_s);
+    g->e_ce += trap(pos(prev->p_ce), pos(cur->p_ce), dt_s);
+    g->buy_eur += e_imp * price_buy / 1000.0f;
+    g->price_secs += price_buy * dt_s;
+    g->price_hc_secs += price_hc * dt_s;
+    g->secs += dt_s;
+    if (!batt_ok) {
+        g->batt_bad = 1;
+    }
+}
+
+static float minf(float a, float b)
+{
+    return a < b ? a : b;
+}
+
+void stats_gap_fill(const gap_acc_t *g, float e_pv, float price_sell, energy_acc_t *d)
+{
+    memset(d, 0, sizeof(*d));
+    float pv = pos(e_pv);
+    d->e_pv = pv;
+    if (g->batt_bad || !(g->secs > 0.0f)) {
+        return;     /* PV seul : sans la batterie, la maison n'est pas déductible */
+    }
+    const float kwh = 1.0f / 1000.0f;
+    float ch = g->e_batt_ch, dis = g->e_batt_dis;
+
+    /* Totaux de la période, même répartition que flows_split() (§9.9) : l'export vient du PV. */
+    float pv_grid = minf(g->e_export, pv);
+    float pv_batt = minf(pv - pv_grid, ch);
+    float pv_home = pv - pv_grid - pv_batt;
+    float grid_batt = ch - pv_batt;
+    float grid_home = pos(g->e_import - grid_batt);
+    float batt_home = dis;
+    float home = pv_home + batt_home + grid_home;
+    float ce = minf(g->e_ce, home);
+    float ce_local = home > 0.0f ? ce * (pv_home + batt_home) / home : 0.0f;
+
+    d->e_home = home;
+    d->e_batt_ch = ch;
+    d->e_batt_dis = dis;
+    d->e_ce = g->e_ce;
+    d->e_ce_local = ce_local;
+    d->e_pv_home = pv_home;
+    d->e_pv_batt = pv_batt;
+    d->e_pv_grid = pv_grid;
+    d->e_grid_home = grid_home;
+    d->e_grid_batt = grid_batt;
+    d->e_batt_home = batt_home;
+
+    /* Contrefactuels au prix moyen de la période ; le coût réel exact est déjà compté. */
+    float price = g->price_secs / g->secs;
+    float price_hc = g->price_hc_secs / g->secs;
+    float c_real = g->buy_eur - g->e_export * price_sell * kwh;
+    float pv_home_sb = minf(pv, home);      /* sans batterie : le PV va d'abord à la maison */
+    float c_no_batt = ((home - pv_home_sb) * price - (pv - pv_home_sb) * price_sell) * kwh;
+    d->c_no_batt = c_no_batt - c_real;
+    d->c_no_install = home * price * kwh - c_real;
+    d->hc_ce_value = ce_local * price_hc * kwh;
+}
+
 float stats_wear_cost(float batt_price, float cycles, float capa_kwh)
 {
     if (!(batt_price > 0.0f && cycles > 0.0f && capa_kwh > 0.0f)) {

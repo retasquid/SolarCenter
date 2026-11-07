@@ -1,3 +1,4 @@
+#include <math.h>
 #include <string.h>
 #include <time.h>
 #include "freertos/FreeRTOS.h"
@@ -16,6 +17,7 @@
 #include "sysmon.h"
 #include "jwt_exp.h"
 #include "forecast.h"
+#include "history.h"
 #include "web_priv.h"
 
 static const char *TAG = "web";
@@ -99,6 +101,19 @@ static esp_err_t system_get(httpd_req_t *req)
         if (t != NULL) {
             cJSON_AddNumberToObject(stk, tasks[i], uxTaskGetStackHighWaterMark(t));
         }
+    }
+
+    hist_gap_info_t gap;
+    history_gap_info(&gap);
+    cJSON *g = cJSON_AddObjectToObject(r, "envoy_gaps");
+    if (g != NULL) {
+        cJSON_AddBoolToObject(g, "active", gap.active);
+        cJSON_AddNumberToObject(g, "active_since", gap.active_since);
+        cJSON_AddNumberToObject(g, "count", gap.count);
+        cJSON_AddNumberToObject(g, "dropped", gap.dropped);
+        cJSON_AddNumberToObject(g, "last_ts", gap.last_ts);
+        cJSON_AddNumberToObject(g, "last_pv_wh", (double)lroundf(gap.last_pv_wh));
+        cJSON_AddNumberToObject(g, "last_hours", (double)lroundf(gap.last_hours * 10.0f) / 10.0);
     }
 
     config_get(&g_web_cfg);

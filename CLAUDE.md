@@ -184,6 +184,7 @@ Timeout HTTP **3 s**, au plus 1 nouvel essai, puis `valid = false`. Ne **jamais*
 - Buffer de réponse statique de 8 Ko, période ≥ 10 s, connexion fermée après chaque requête, prise du `g_tls_mutex`.
 - Décoder la date `exp` du JWT (base64url) et **afficher l'échéance** dans l'interface (alerte à J−30).
 - Firmware < 7 : HTTP sans jeton (option de configuration).
+- **Coupures** (Envoy loin du WiFi, 2026-11-07) : la même entrée de `production.json` fournit le compteur cumulé `whLifetime` (constaté le 2026-11-07 sur l'entrée `eim` ; `TODO(verify)` sur l'entrée `inverters`). Au retour de l'Envoy, l'écart du compteur donne le PV de la coupure ; `history` le répartit sur les créneaux du trou (irradiance prévue × durée) et reconstitue maison, flux et contrefactuels (`stats_gap_fill`). Créneaux marqués `HIST_SLOT_REBUILT`, jamais utilisés pour l'apprentissage. Abandon au-delà de 12 h ou si le compteur est incohérent.
 
 ### 8.3 Zendure SolarFlow 1600 AC+ (zenSDK, API HTTP locale)
 - Prérequis utilisateur : activer l'API locale (HEMS) dans l'app Zendure, et **désactiver tout mode intelligent de Zendure** (lecture de compteur, CT). **Un seul régulateur : l'ESP32.**

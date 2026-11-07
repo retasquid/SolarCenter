@@ -486,7 +486,18 @@ function renderSystem(s) {
     ['État', CFG_STATUS[s.cfg_status] || s.cfg_status],
     ['Tarif', s.tariff_configured ? 'saisi' : 'à saisir', s.tariff_configured ? '' : 'warn'],
     ['Mode', s.observer ? 'observateur' : 'pilotage'],
+    ['Coupures de l\'Envoy', gapText(s.envoy_gaps), s.envoy_gaps && s.envoy_gaps.active ? 'warn' : ''],
   ]);
+}
+
+// Coupures de l'Envoy : production retrouvée au retour grâce à son compteur cumulé.
+function gapText(g) {
+  if (!g) return '—';
+  const at = (t) => new Date(t * 1000).toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  let txt = g.active ? `en cours depuis ${at(g.active_since)}` : g.count ? `${g.count} reconstituée(s)` : 'aucune';
+  if (g.last_ts) txt += ` · dernière le ${at(g.last_ts)} : ${fr(g.last_pv_wh / 1000, 2)} kWh sur ${fr(g.last_hours, 1)} h`;
+  if (g.dropped) txt += ` · ${g.dropped} non reconstituée(s)`;
+  return txt;
 }
 
 function renderDevices(s) {
@@ -503,6 +514,7 @@ function renderDevices(s) {
       cls = 'warn';
     }
     if (d.configured && d.errors) txt += ` · ${d.errors} err.`;
+    if (k === 'envoy' && s.pv && s.pv.wh_lifetime !== undefined) txt += ` · compteur ${fr(s.pv.wh_lifetime / 1000, 1)} kWh`;
     rows.push([names[k], txt, cls]);
   }
   fillDl('sys-dev', rows);

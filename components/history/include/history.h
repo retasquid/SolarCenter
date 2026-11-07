@@ -28,8 +28,10 @@ typedef struct {
     uint8_t  soc;               /* % en fin de créneau, 255 = inconnu */
     uint8_t  cov_grid;          /* % du créneau mesuré par le Shelly */
     uint8_t  cov_full;          /* % du créneau avec toutes les mesures */
-    uint8_t  reserved;
+    uint8_t  flags;             /* HIST_SLOT_* (octet réservé, à 0, dans les fichiers antérieurs) */
 } hist_slot_t;
+
+#define HIST_SLOT_REBUILT   0x01    /* PV de l'Envoy reconstitué après une coupure (compteur cumulé) */
 
 typedef struct {
     uint32_t     date;          /* AAAAMMJJ */
@@ -82,6 +84,19 @@ bool history_predict(uint32_t slot_ts, hist_pred_t *out);
 void history_model_info(rls_t *pv, rls_t *base, int *profile_slots);
 
 esp_err_t history_reset_models(bool pv, bool base, bool profile);
+
+/* Coupures de l'Envoy : état de la reconstitution (page Système). */
+typedef struct {
+    bool     active;            /* coupure en cours, mesures du trou accumulées */
+    uint32_t active_since;      /* epoch du début de la coupure en cours */
+    uint32_t last_ts;           /* epoch de la dernière reconstitution, 0 = aucune */
+    float    last_pv_wh;        /* énergie PV reconstituée */
+    float    last_hours;        /* durée de la coupure reconstituée */
+    uint16_t count;             /* reconstitutions depuis le démarrage */
+    uint16_t dropped;           /* coupures non reconstituées (compteur absent ou incohérent, trop longues) */
+} hist_gap_info_t;
+
+void history_gap_info(hist_gap_info_t *out);
 
 /* Outils de date locale. */
 uint32_t history_date_of(int64_t t);                /* AAAAMMJJ */

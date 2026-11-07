@@ -11,6 +11,10 @@ static const char *TAG = "drv_envoy";
 /* Constaté le 2026-11-04 (fw D8.3) : avec jeton, production.json?details=1 répond en plus de 3 s.
  * Lu dans task_poll, séparée du Shelly : ce délai ne retarde pas le capteur maître. */
 #define ENVOY_TIMEOUT_MS 8000
+/* Compteur cumulé (Wh) de l'entrée de production.json : constaté le 2026-11-07 sur l'entrée « eim »
+ * de l'Envoy de la maison (5 275 705 Wh). TODO(verify) : présence sur l'entrée « inverters » (repli). */
+#define ENVOY_KEY_WH_LIFETIME "whLifetime"
+#define ENVOY_WH_MAX          4.0e9     /* borne de plausibilité (uint32_t) */
 
 
 static bool str_is(const cJSON *o, const char *k, const char *val)
@@ -43,6 +47,9 @@ esp_err_t drv_envoy_parse(const char *json, size_t len, envoy_reading_t *out)
     if (cJSON_IsNumber(w)) {
         out->w_now = (float)w->valuedouble;
         out->from_eim = (src == eim);
+        const cJSON *wh = cJSON_GetObjectItemCaseSensitive(src, ENVOY_KEY_WH_LIFETIME);
+        out->wh_valid = cJSON_IsNumber(wh) && wh->valuedouble >= 0.0 && wh->valuedouble < ENVOY_WH_MAX;
+        out->wh_lifetime = out->wh_valid ? (uint32_t)wh->valuedouble : 0;
         err = ESP_OK;
     }
     cJSON_Delete(root);

@@ -560,7 +560,7 @@ const SCHEMA = [
     { k: 'price_eur', l: 'Prix de la batterie', t: 'num', min: 0, max: 20000, step: 1, u: '€' },
     { k: 'cycles', l: 'Cycles garantis', t: 'int', min: 1, max: 65535 },
     { k: 'commissioning', l: 'Mise en service', t: 'date' },
-    { k: 'arbitrage', l: 'Arbitrage réseau (charge en HC)', t: 'bool' },
+    { k: 'arbitrage', l: 'Arbitrage réseau (charge en HC)', t: 'bool', help: 'Charge depuis le réseau en heures creuses seulement si le kWh restitué en heures pleines rapporte plus que son prix HC, les pertes et l\'usure, et si le soleil ne remplira pas la batterie.' },
   ] },
   { sec: 'wh', title: 'Chauffe-eau', fields: [
     { k: 'power_w', l: 'Puissance nominale', t: 'num', min: 100, max: 3999, step: 1, u: 'W' },
@@ -1407,8 +1407,27 @@ function renderPlan(p) {
     ['Énergie du cycle', `${fmtKwh(wh.e_heated_wh)} sur ${fmtKwh(wh.e_full_wh)} (chauffe complète apprise)`],
     ['Prévu jusqu\'aux HC', `surplus ${fmtKwh(p.S_wh)}, batterie ${fmtKwh(p.B_wh)}, ballon ${fmtKwh(p.E_ce_wh)}`],
     ['SOC cible', p.soc_target_now != null ? `${Math.round(p.soc_target_now)} %` : '—'],
+    ...(p.arbitrage && p.arbitrage.enabled ? [['Arbitrage réseau', arbText(p.arbitrage)]] : []),
   ]);
   setSocMark(p.soc_target_now);
+  renderArbitrage(p.arbitrage);
+}
+
+// Arbitrage (§9.6) : gain d'un kWh chargé en HC cette nuit et restitué en HP demain.
+function arbText(a) {
+  if (!a || a.hc_start == null || a.gain_kwh == null) return 'pas de plage HC suivie d\'heures pleines dans les 24 h';
+  const g = `gain ${a.gain_kwh >= 0 ? '+' : ''}${fr(a.gain_kwh, 3)} €/kWh, HC de ${hhmm(a.hc_start)}`;
+  if (a.gain_kwh <= 0) return `non rentable (${g})`;
+  if (!(a.grid_wh > 0)) return `rentable (${g}), mais le soleil prévu remplira la batterie`;
+  return `charge de ${fmtKwh(a.grid_wh)} jusqu'à ${Math.round(a.soc_target)} % (${g}, ${fr(a.gain_eur, 2)} € attendus)${a.charging ? ' — en cours' : ''}`;
+}
+
+function renderArbitrage(a) {
+  const row = document.getElementById(fid('batt', 'arbitrage') + '-row');
+  if (!row) return;
+  let s = row.querySelector('.arb-now');
+  if (!s) s = el('small', { class: 'arb-now' }, row);
+  s.textContent = 'Prochaine nuit : ' + arbText(a) + '.';
 }
 
 async function loadPlan() {
@@ -1565,4 +1584,5 @@ setInterval(() => {
   const page = location.hash.slice(1) || DEFAULT_PAGE;
   if (page === 'accueil') loadPlan();
   if (page === 'systeme') loadLog();
+  if (page === 'parametres') loadPlan();
 }, 10000);

@@ -113,6 +113,12 @@ régulateur, et **mise à jour**.
   de son thermostat. Le boîtier vise le soleil de l'après-midi ; s'il n'y en aura pas assez, il
   chauffe la nuit le **plus tard possible** en heures creuses ; en dernier recours, il lance un
   rattrapage avant les douches, même en heures pleines.
+- **Arbitrage réseau** (option, désactivée par défaut) : charger la batterie la nuit en heures creuses
+  pour l'utiliser le lendemain en heures pleines. Le boîtier ne le fait que si un kWh ainsi stocké
+  rapporte plus que son prix d'achat, les pertes (rendement) et l'usure de la batterie, et seulement
+  la quantité que le soleil du lendemain ne fournira pas. Le gain par kWh de la prochaine nuit est
+  affiché sous la case, dans Paramètres → Batterie. Avec un écart HP/HC faible, il est souvent négatif :
+  la batterie ne charge alors pas, et c'est voulu.
 - **Surplus** : il va à l'usage qui rapporte le plus (en général batterie, puis chauffe-eau, puis
   revente au réseau).
 - Réglez le thermostat du ballon à **55 °C ou plus** : la chauffe complète quotidienne couvre

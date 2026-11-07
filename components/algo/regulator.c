@@ -194,6 +194,11 @@ static void decide_batt(const reg_input_t *in, reg_state_t *s, reg_output_t *out
         target = in->p_batt + in->p_grid;   /* vise 0 W au compteur */
         out->batt_reason = RB_TRACK;
     }
+    /* Arbitrage (§9.6) : en HC seulement, jusqu'au SOC prévu par le plan ; les limites suivent. */
+    if (in->hc && in->arb_charge_w > 0.0f && in->soc < in->arb_soc_target) {
+        target = -in->arb_charge_w;
+        out->batt_reason = RB_ARBITRAGE;
+    }
 
     float max_dis = c->p_discharge_max;
     float max_ch = c->p_charge_max;
@@ -207,7 +212,7 @@ static void decide_batt(const reg_input_t *in, reg_state_t *s, reg_output_t *out
         lim |= RB_LIM_SOC_MAX;
     }
     if (in->hc) {
-        max_dis = 0.0f;     /* §9.4 : jamais de décharge en HC (arbitrage hors M3) */
+        max_dis = 0.0f;     /* §9.4 : jamais de décharge en HC */
         lim |= RB_LIM_HC;
     }
     /* Sous la cible du plan, le chauffe-eau ne puise pas dans la batterie (§9.3) : elle ne couvre
@@ -270,7 +275,7 @@ const char *regulator_ce_reason_name(uint8_t r)
 const char *regulator_batt_reason_name(uint8_t r)
 {
     static const char *const names[] = {
-        "pas d'heure", "repli Shelly", "batterie ignorée", "zone morte", "zéro injection",
+        "pas d'heure", "repli Shelly", "batterie ignorée", "zone morte", "zéro injection", "arbitrage",
     };
-    return r <= RB_TRACK ? names[r] : "?";
+    return r <= RB_ARBITRAGE ? names[r] : "?";
 }

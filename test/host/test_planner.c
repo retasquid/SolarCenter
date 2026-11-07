@@ -134,6 +134,79 @@ static void test_surplus_before_shower(void)
     TEST_ASSERT_FLOAT_WITHIN(0.1f, 5800.0f, p.S_wh);
 }
 
+/* ---------- Arbitrage réseau (§9.6) ---------- */
+
+/* Nuit de 16 créneaux HC (prix variables), puis 32 créneaux HP à 0,253 €/kWh. Batterie vide, pas de soleil. */
+static void arb_night(float hc_cheap, int n_cheap, float hc_rest, float hp)
+{
+    in.soc = in.soc_min;
+    in.capa_kwh = 3.84f;
+    in.wear_eur_kwh = 0.042f;
+    for (int k = 0; k < PLAN_SLOTS; k++) {
+        in.hc[k] = k < 16;
+        in.price[k] = k < 16 ? (k < n_cheap ? hc_cheap : hc_rest) : hp;
+        in.pv_wh[k] = 0.0f;
+        in.base_wh[k] = 200.0f;
+    }
+}
+
+/* Dimanche soir (HC week-end 0,157) puis lundi (HP semaine 0,253) : seule la partie avant minuit est rentable. */
+static void test_arbitrage_sunday_night_cheap_slots_only(void)
+{
+    arb_night(0.157f, 3, 0.191f, 0.253f);
+    arb_t a;
+    planner_arbitrage(&in, 1600.0f, 1600.0f, &a);
+    TEST_ASSERT_EQUAL_INT(0, a.hc_start);
+    TEST_ASSERT_EQUAL_INT(16, a.hc_end);
+    TEST_ASSERT_FLOAT_WITHIN(0.002f, 0.253f - 0.157f / 0.88f - 0.042f, a.gain_kwh);
+    TEST_ASSERT_TRUE(a.gain_eur > 0.0f);
+    for (int k = 3; k < 16; k++) {
+        TEST_ASSERT_EQUAL_FLOAT(0.0f, a.charge_wh[k]);      /* après minuit : HC semaine, non rentable */
+    }
+    /* 3 créneaux × 800 Wh, au pas de recherche près. */
+    TEST_ASSERT_FLOAT_WITHIN(ARB_STEP_WH / 0.88f, 2400.0f, a.grid_wh);
+    TEST_ASSERT_TRUE(a.grid_wh <= 2400.5f);
+    TEST_ASSERT_FLOAT_WITHIN(1.0f, a.grid_wh * 0.88f, a.stored_wh);
+    TEST_ASSERT_TRUE(a.soc_target > in.soc_min);
+}
+
+/* Semaine → semaine en saison haute : 0,253 − 0,191 / 0,88 − 0,042 < 0, aucune charge. */
+static void test_arbitrage_not_profitable(void)
+{
+    arb_night(0.191f, 16, 0.191f, 0.253f);
+    arb_t a;
+    planner_arbitrage(&in, 1600.0f, 1600.0f, &a);
+    TEST_ASSERT_TRUE(a.gain_kwh < 0.0f);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, a.grid_wh);
+    TEST_ASSERT_EQUAL_FLOAT(in.soc, a.soc_target);
+}
+
+/* Lendemain ensoleillé : le soleil remplit la batterie, on ne charge que le déficit du matin. */
+static void test_arbitrage_sunny_day_charges_morning_only(void)
+{
+    arb_night(0.10f, 16, 0.10f, 0.30f);
+    for (int k = 20; k < 32; k++) {
+        in.pv_wh[k] = 1200.0f;                              /* +1000 Wh par créneau : batterie pleine */
+    }
+    arb_t a;
+    planner_arbitrage(&in, 1600.0f, 1600.0f, &a);
+    TEST_ASSERT_TRUE(a.gain_eur > 0.0f);
+    TEST_ASSERT_FLOAT_WITHIN(60.0f, 800.0f, a.stored_wh);    /* 4 créneaux du matin × 200 Wh */
+}
+
+static void test_arbitrage_no_hc_in_horizon(void)
+{
+    for (int k = 0; k < PLAN_SLOTS; k++) {
+        in.hc[k] = false;
+        in.price[k] = 0.20f;
+    }
+    arb_t a;
+    planner_arbitrage(&in, 1600.0f, 1600.0f, &a);
+    TEST_ASSERT_EQUAL_INT(-1, a.hc_start);
+    TEST_ASSERT_TRUE(isnan(a.gain_kwh));
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, a.grid_wh);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -144,6 +217,10 @@ int main(void)
     RUN_TEST(test_no_forecast);
     RUN_TEST(test_soc_target_reaches_b_at_end_of_production);
     RUN_TEST(test_value_order_from_prices);
+    RUN_TEST(test_arbitrage_sunday_night_cheap_slots_only);
+    RUN_TEST(test_arbitrage_not_profitable);
+    RUN_TEST(test_arbitrage_sunny_day_charges_morning_only);
+    RUN_TEST(test_arbitrage_no_hc_in_horizon);
     RUN_TEST(test_surplus_before_shower);
     return UNITY_END();
 }

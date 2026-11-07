@@ -55,8 +55,22 @@ static esp_err_t plan_get(httpd_req_t *req)
                  "\"limits\":%u,\"avail_w\":%.0f},",
               o->relay ? "true" : "false", regulator_ce_reason_name(o->ce_reason), (double)o->batt_sp,
               regulator_batt_reason_name(o->batt_reason), o->batt_limits, (double)o->avail_w);
-    jw_printf(w, "\"override\":{\"mode\":\"%s\",\"until\":%lld}}", ovr_name(s_st.override),
+    jw_printf(w, "\"override\":{\"mode\":\"%s\",\"until\":%lld},", ovr_name(s_st.override),
               (long long)s_st.override_until);
+    /* Arbitrage réseau (§9.6) : calculé même désactivé, pour montrer le gain par kWh dans les Paramètres. */
+    const arb_t *a = &s_st.arb;
+    jw_printf(w, "\"arbitrage\":{\"enabled\":%s,\"hc_start\":", s_st.arb_enabled ? "true" : "false");
+    if (a->hc_start >= 0) {
+        jw_printf(w, "%lld,\"hc_end\":%lld,", (long long)(p->t0 + (int64_t)a->hc_start * PLAN_SLOT_S),
+                  (long long)(p->t0 + (int64_t)a->hc_end * PLAN_SLOT_S));
+    } else {
+        jw_printf(w, "null,\"hc_end\":null,");
+    }
+    jw_printf(w, "\"gain_kwh\":");
+    jw_num(w, a->gain_kwh, 4);
+    jw_printf(w, ",\"grid_wh\":%.0f,\"stored_wh\":%.0f,\"gain_eur\":%.3f,\"soc_target\":%.1f,\"charging\":%s}}",
+              (double)a->grid_wh, (double)a->stored_wh, (double)a->gain_eur, (double)a->soc_target,
+              o->batt_reason == RB_ARBITRAGE ? "true" : "false");
     return jw_end(w);
 }
 

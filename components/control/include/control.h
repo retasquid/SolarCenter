@@ -17,6 +17,8 @@ typedef struct {
     bool          observer;
     bool          plan_valid;
     plan_t        plan;
+    arb_t         arb;              /* arbitrage réseau calculé avec le plan */
+    bool          arb_enabled;
     wh_night_t    night;
     reg_output_t  out;              /* dernière décision */
     float         soc_target;

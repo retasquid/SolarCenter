@@ -92,6 +92,47 @@ static void test_no_discharge_in_hc(void)
     TEST_ASSERT_EQUAL_FLOAT(-300, out.batt_sp);
 }
 
+/* Arbitrage (§9.6) : en HC, charge depuis le réseau à la puissance du plan, avec la rampe, jusqu'au SOC prévu. */
+static void test_arbitrage_charges_in_hc_only(void)
+{
+    in.hc = true;
+    in.p_grid = 300;                    /* maison la nuit */
+    in.arb_charge_w = 1000;
+    in.arb_soc_target = 60;
+    step();
+    TEST_ASSERT_EQUAL_UINT8(RB_ARBITRAGE, out.batt_reason);
+    TEST_ASSERT_EQUAL_FLOAT(-300, out.batt_sp);         /* rampe */
+    for (int i = 0; i < 5; i++) {
+        in.p_batt = out.batt_sp;
+        in.p_grid = 300 - in.p_batt;                    /* la charge s'ajoute à l'import */
+        step();
+    }
+    TEST_ASSERT_EQUAL_FLOAT(-1000, out.batt_sp);
+    in.soc = 60;                                        /* cible atteinte : retour au zéro injection */
+    step();
+    TEST_ASSERT_EQUAL_UINT8(RB_TRACK, out.batt_reason);
+    TEST_ASSERT_EQUAL_FLOAT(-700, out.batt_sp);         /* remonte vers 0 (pas de décharge en HC) */
+    in.soc = 50;
+    in.hc = false;                                      /* jamais en heures pleines */
+    in.p_batt = 0;
+    st.batt_sp = 0;
+    step();
+    TEST_ASSERT_NOT_EQUAL(RB_ARBITRAGE, out.batt_reason);
+    TEST_ASSERT_TRUE(out.batt_sp >= 0);
+}
+
+static void test_arbitrage_respects_soc_max(void)
+{
+    in.hc = true;
+    in.soc = 100;
+    in.p_grid = 300;
+    in.arb_charge_w = 1600;
+    in.arb_soc_target = 100.5f;
+    step();
+    TEST_ASSERT_EQUAL_FLOAT(0, out.batt_sp);
+    TEST_ASSERT_TRUE(out.batt_limits & RB_LIM_SOC_MAX);
+}
+
 static void test_soc_limits(void)
 {
     in.soc = 10;
@@ -551,6 +592,8 @@ int main(void)
     RUN_TEST(test_zero_grid_tracking_with_ramp);
     RUN_TEST(test_deadband_keeps_setpoint);
     RUN_TEST(test_no_discharge_in_hc);
+    RUN_TEST(test_arbitrage_charges_in_hc_only);
+    RUN_TEST(test_arbitrage_respects_soc_max);
     RUN_TEST(test_soc_limits);
     RUN_TEST(test_shelly_invalid_rest_and_ce_off_outside_hc);
     RUN_TEST(test_no_time_rest);

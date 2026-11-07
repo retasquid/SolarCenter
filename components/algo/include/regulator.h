@@ -28,6 +28,7 @@ typedef enum {
     RB_NO_BATT,             /* Zendure invalide : batterie ignorée (consigne 0) */
     RB_DEADBAND,            /* |p_grid| < 30 W : consigne inchangée */
     RB_TRACK,               /* asservissement zéro injection / zéro soutirage */
+    RB_ARBITRAGE,           /* charge depuis le réseau en HC, rentable selon le plan (§9.6) */
 } reg_batt_reason_t;
 
 /* Limites appliquées à la consigne batterie (bits). */
@@ -90,6 +91,8 @@ typedef struct {
     int64_t   next_shower;      /* prochaine heure des douches */
     reg_override_t override;
     int64_t   override_until;
+    float     arb_charge_w;     /* charge réseau demandée pour ce créneau HC (W, ≥ 0), 0 = pas d'arbitrage */
+    float     arb_soc_target;   /* % où s'arrêter */
 } reg_input_t;
 
 typedef struct {

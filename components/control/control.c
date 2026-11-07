@@ -48,6 +48,7 @@ static reg_state_t s_reg;
 static plan_in_t s_pin;
 static plan_t s_plan;
 static bool s_plan_valid;
+static arb_t s_arb;                     /* arbitrage réseau de la prochaine plage HC (§9.6) */
 static wh_night_t s_night;
 
 /* ---------- Heure locale ---------- */
@@ -163,6 +164,7 @@ static void compute_plan(int64_t now, const app_state_t *st, const tariff_t *tf,
         s_pin.base_wh[k] = isfinite(p.base) ? p.base : 0.0f;
         s_pin.hc[k] = tariff_is_hc(tf, local_minute(ts + PLAN_SLOT_S / 2));
         float price = config_price_at(tf, ts + PLAN_SLOT_S / 2);
+        s_pin.price[k] = price;
         if (s_pin.hc[k]) {
             hc_min = (hc_min < 0.0f || price < hc_min) ? price : hc_min;
         } else {
@@ -183,6 +185,11 @@ static void compute_plan(int64_t now, const app_state_t *st, const tariff_t *tf,
     s_pin.shower_at = next_shower;
     planner_compute(&s_pin, &s_plan);
     s_plan_valid = true;
+    planner_arbitrage(&s_pin, s_cfg.batt.p_charge_max, s_cfg.batt.p_discharge_max, &s_arb);
+    if (s_cfg.batt.arbitrage && s_arb.grid_wh > 0.0f) {
+        ESP_LOGI(TAG, "arbitrage : %.0f Wh à prendre en HC (SOC cible %.0f %%), gain %.3f €/kWh, %.2f € attendus",
+                 (double)s_arb.grid_wh, (double)s_arb.soc_target, (double)s_arb.gain_kwh, (double)s_arb.gain_eur);
+    }
     ESP_LOGI(TAG, "plan : S %.0f Wh, B %.0f Wh, E_ce %.0f Wh, mode %s, %s d'abord", s_plan.S_wh, s_plan.B_wh,
              s_plan.E_ce_wh, planner_mode_name(s_plan.mode), s_plan.ce_first ? "chauffe-eau" : "batterie");
 }
@@ -312,7 +319,8 @@ static void regul_task(void *arg)
             time_t tt = (time_t)now;
             localtime_r(&tt, &tm);
             bool morning = minute >= PLAN_MORNING_MIN && tm.tm_yday != last_morning_yday;
-            if (!s_plan_valid || tm.tm_hour != last_plan_hour || morning) {
+            /* Aussi au début de chaque plage HC : l'arbitrage part du SOC réel de ce moment. */
+            if (!s_plan_valid || tm.tm_hour != last_plan_hour || morning || (hc && !was_hc)) {
                 compute_plan(now, &st, &tf, next_shower);
                 last_plan_hour = tm.tm_hour;
                 if (morning) {
@@ -360,6 +368,13 @@ static void regul_task(void *arg)
             .override = ovr,
             .override_until = ovr_until,
         };
+        if (s_cfg.batt.arbitrage && s_plan_valid && now >= s_plan.t0) {
+            int64_t k = (now - s_plan.t0) / PLAN_SLOT_S;
+            if (k < PLAN_SLOTS) {
+                in.arb_charge_w = s_arb.charge_wh[k] * 3600.0f / PLAN_SLOT_S;
+                in.arb_soc_target = s_arb.soc_target;
+            }
+        }
         last_step = now;
         reg_output_t out;
         regulator_step(&in, &s_reg, &out);
@@ -385,6 +400,8 @@ static void regul_task(void *arg)
         s_status.observer = observer;
         s_status.plan_valid = s_plan_valid;
         s_status.plan = s_plan;
+        s_status.arb = s_arb;
+        s_status.arb_enabled = s_cfg.batt.arbitrage;
         s_status.night = s_night;
         s_status.out = out;
         s_status.soc_target = soc_target;

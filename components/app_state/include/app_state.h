@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_err.h"
 #include "flows.h"
 
@@ -106,6 +107,11 @@ void app_state_unlock(void);
 
 bool app_cmd_send(const app_cmd_t *cmd, TickType_t wait);
 bool app_cmd_receive(app_cmd_t *cmd, TickType_t wait);
+
+/* Nouvelle mesure du Shelly ou du SolarFlow : réveille la tâche inscrite (task_regul), qui régule
+ * au rythme des mesures au lieu d'une période fixe. */
+void app_state_listen_samples(TaskHandle_t task);
+void app_state_notify_sample(void);
 
 /* Horloge monotone en ms (reboucle après ~49 jours : comparer par différence non signée). */
 uint32_t app_now_ms(void);

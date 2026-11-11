@@ -58,26 +58,42 @@ static void run(int seconds)
 
 static void test_zero_grid_tracking_with_ramp(void)
 {
-    in.p_grid = 500;
+    in.p_grid = 900;
     step();
-    TEST_ASSERT_EQUAL_FLOAT(300, out.batt_sp);          /* rampe ±300 W par pas */
+    TEST_ASSERT_EQUAL_FLOAT(REG_RAMP_W, out.batt_sp);   /* rampe ±600 W par pas */
     TEST_ASSERT_TRUE(out.batt_limits & RB_LIM_RAMP);
-    in.p_batt = 300;
-    in.p_grid = 200;
+    in.p_batt = 600;
+    in.p_grid = 300;
     step();
-    TEST_ASSERT_EQUAL_FLOAT(500, out.batt_sp);          /* p_batt + p_grid */
+    TEST_ASSERT_EQUAL_FLOAT(900, out.batt_sp);          /* p_batt + p_grid */
 }
 
 static void test_deadband_keeps_setpoint(void)
 {
     in.p_grid = -400;
     step();
-    TEST_ASSERT_EQUAL_FLOAT(-300, out.batt_sp);
-    in.p_batt = -300;
+    TEST_ASSERT_EQUAL_FLOAT(-400, out.batt_sp);
+    in.p_batt = -400;
     in.p_grid = -20;
     step();
     TEST_ASSERT_EQUAL(RB_DEADBAND, out.batt_reason);
-    TEST_ASSERT_EQUAL_FLOAT(-300, out.batt_sp);
+    TEST_ASSERT_EQUAL_FLOAT(-400, out.batt_sp);
+}
+
+/* Consigne tout juste écrite, mesures pas encore rafraîchies : rien ne bouge, sauf les sécurités. */
+static void test_hold_keeps_setpoint_until_settled(void)
+{
+    in.p_grid = 500;
+    step();
+    TEST_ASSERT_EQUAL_FLOAT(500, out.batt_sp);
+    in.batt_hold = true;                                /* p_batt encore à 0, p_grid encore à 500 */
+    step();
+    TEST_ASSERT_EQUAL(RB_SETTLE, out.batt_reason);
+    TEST_ASSERT_EQUAL_FLOAT(500, out.batt_sp);          /* pas de double correction vers 1000 W */
+    in.grid_ok = false;                                 /* le repli passe avant l'attente */
+    step();
+    TEST_ASSERT_EQUAL(RB_FALLBACK, out.batt_reason);
+    TEST_ASSERT_EQUAL_FLOAT(0, out.batt_sp);
 }
 
 static void test_no_discharge_in_hc(void)
@@ -89,7 +105,7 @@ static void test_no_discharge_in_hc(void)
     TEST_ASSERT_TRUE(out.batt_limits & RB_LIM_HC);
     in.p_grid = -400;                                   /* surplus solaire : charge permise */
     step();
-    TEST_ASSERT_EQUAL_FLOAT(-300, out.batt_sp);
+    TEST_ASSERT_EQUAL_FLOAT(-400, out.batt_sp);
 }
 
 /* Arbitrage (§9.6) : en HC, charge depuis le réseau à la puissance du plan, avec la rampe, jusqu'au SOC prévu. */
@@ -101,7 +117,7 @@ static void test_arbitrage_charges_in_hc_only(void)
     in.arb_soc_target = 60;
     step();
     TEST_ASSERT_EQUAL_UINT8(RB_ARBITRAGE, out.batt_reason);
-    TEST_ASSERT_EQUAL_FLOAT(-300, out.batt_sp);         /* rampe */
+    TEST_ASSERT_EQUAL_FLOAT(-REG_RAMP_W, out.batt_sp);  /* rampe */
     for (int i = 0; i < 5; i++) {
         in.p_batt = out.batt_sp;
         in.p_grid = 300 - in.p_batt;                    /* la charge s'ajoute à l'import */
@@ -111,7 +127,7 @@ static void test_arbitrage_charges_in_hc_only(void)
     in.soc = 60;                                        /* cible atteinte : retour au zéro injection */
     step();
     TEST_ASSERT_EQUAL_UINT8(RB_TRACK, out.batt_reason);
-    TEST_ASSERT_EQUAL_FLOAT(-700, out.batt_sp);         /* remonte vers 0 (pas de décharge en HC) */
+    TEST_ASSERT_EQUAL_FLOAT(-400, out.batt_sp);         /* remonte vers 0 (pas de décharge en HC) */
     in.soc = 50;
     in.hc = false;                                      /* jamais en heures pleines */
     in.p_batt = 0;
@@ -384,9 +400,9 @@ static void test_battery_does_not_feed_heater_below_target(void)
     in.relay_on = true;
     step();
     TEST_ASSERT_TRUE(out.relay);
-    TEST_ASSERT_EQUAL_FLOAT(300, out.batt_sp);          /* rampe vers 400 W, pas vers 2900 W */
-    in.p_batt = 300;
-    in.p_grid = 2600;
+    TEST_ASSERT_EQUAL_FLOAT(400, out.batt_sp);          /* 400 W de maison, pas 2900 W */
+    in.p_batt = 400;
+    in.p_grid = 2500;
     step();
     TEST_ASSERT_EQUAL_FLOAT(400, out.batt_sp);
     TEST_ASSERT_TRUE(out.batt_limits & RB_LIM_CE);
@@ -591,6 +607,7 @@ int main(void)
     UNITY_BEGIN();
     RUN_TEST(test_zero_grid_tracking_with_ramp);
     RUN_TEST(test_deadband_keeps_setpoint);
+    RUN_TEST(test_hold_keeps_setpoint_until_settled);
     RUN_TEST(test_no_discharge_in_hc);
     RUN_TEST(test_arbitrage_charges_in_hc_only);
     RUN_TEST(test_arbitrage_respects_soc_max);

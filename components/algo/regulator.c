@@ -186,6 +186,11 @@ static void decide_batt(const reg_input_t *in, reg_state_t *s, reg_output_t *out
         return;
     }
     float prev = s->batt_sp;
+    if (in->batt_hold) {
+        out->batt_sp = prev;
+        out->batt_reason = RB_SETTLE;
+        return;
+    }
     float target;
     if (fabsf(in->p_grid) < REG_DEADBAND_W) {
         target = prev;
@@ -276,6 +281,7 @@ const char *regulator_batt_reason_name(uint8_t r)
 {
     static const char *const names[] = {
         "pas d'heure", "repli Shelly", "batterie ignorée", "zone morte", "zéro injection", "arbitrage",
+        "attente batterie",
     };
-    return r <= RB_ARBITRAGE ? names[r] : "?";
+    return r <= RB_SETTLE ? names[r] : "?";
 }

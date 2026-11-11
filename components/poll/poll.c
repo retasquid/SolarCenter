@@ -28,6 +28,7 @@ static const char *TAG = "poll";
 #define PV_NEG_TOLERANCE_W      50.0f
 #define BACKOFF_AFTER_ERR       3       /* échecs consécutifs avant d'espacer les essais */
 #define BACKOFF_MS              30000
+#define ZENDURE_STALE_MS        15000
 
 static StaticTask_t s_grid_buf;
 static StackType_t s_grid_stack[GRID_STACK];
@@ -42,6 +43,7 @@ static cfg_t s_cfg_envoy;
 typedef struct {
     uint32_t period_ms;
     uint8_t  tolerated_err;             /* échecs consécutifs avant valid = false */
+    uint32_t stale_min_ms;              /* âge minimal avant « périmé » (0 = 3 périodes) */
     uint32_t next_ms;
 } sched_t;
 
@@ -143,6 +145,7 @@ static void poll_device(const cfg_t *cfg, dev_id_t id, uint32_t now)
         app_state_t copy;
         app_state_get(&copy);
         history_on_sample(&copy);
+        app_state_notify_sample();
         break;
     }
     case DEV_ENVOY: {
@@ -177,6 +180,7 @@ static void poll_device(const cfg_t *cfg, dev_id_t id, uint32_t now)
         }
         account(st, id, err, now);
         app_state_unlock();
+        app_state_notify_sample();
         break;
     }
     case DEV_TONGOU: {
@@ -209,6 +213,9 @@ static void refresh_status(const cfg_t *cfg, uint32_t now)
         }
         d->configured = cfgd;
         uint32_t max_age = STALE_PERIODS * s_sched[id].period_ms;
+        if (max_age < s_sched[id].stale_min_ms) {
+            max_age = s_sched[id].stale_min_ms;
+        }
         d->stale = cfgd && (!d->ever_ok || now - d->last_ok_ms > max_age);
     }
     const dev_status_t *sh = &st->dev[DEV_SHELLY];
@@ -305,7 +312,9 @@ esp_err_t poll_start(void)
 {
     s_sched[DEV_SHELLY] = (sched_t){ .period_ms = 2000, .tolerated_err = 1 };
     s_sched[DEV_ENVOY] = (sched_t){ .period_ms = POLL_ENVOY_MS, .tolerated_err = 1 };
-    s_sched[DEV_ZENDURE] = (sched_t){ .period_ms = POLL_ZENDURE_MS, .tolerated_err = ZENDURE_TOLERATED_ERR };
+    /* Lu toutes les 2 s, mais périmé seulement après 15 s : une lecture lente ne coupe pas la régulation. */
+    s_sched[DEV_ZENDURE] = (sched_t){ .period_ms = POLL_ZENDURE_MS, .tolerated_err = ZENDURE_TOLERATED_ERR,
+                                      .stale_min_ms = ZENDURE_STALE_MS };
     s_sched[DEV_TONGOU] = (sched_t){ .period_ms = POLL_TONGOU_MS, .tolerated_err = 1 };
 
     TaskHandle_t g = xTaskCreateStaticPinnedToCore(grid_task, "task_grid", GRID_STACK, NULL, POLL_PRIO,

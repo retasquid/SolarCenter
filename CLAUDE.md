@@ -126,9 +126,9 @@ storage,   data, littlefs, 0x360000, 0xA0000
 
 | Tâche | Cœur | Priorité | Période | Rôle |
 |---|---|---|---|---|
-| `task_regul` | 1 | 7 | 5 s | Copie l'état, appelle `regulator_step()`, pousse les commandes dans `q_cmd` |
+| `task_regul` | 1 | 7 | à chaque mesure du Shelly ou du SolarFlow (≈ 2 s), 5 s au plus | Copie l'état, appelle `regulator_step()`, pousse les commandes dans `q_cmd` |
 | `task_act` | 0 | 6 | sur événement | Consomme `q_cmd` et envoie les ordres HTTP (Zendure, Tongou) |
-| `task_poll` | 0 | 5 | 2 s | Lectures séquentielles : Shelly 2 s, Zendure 5 s, Tongou 5 s, Envoy 10 s |
+| `task_poll` | 0 | 5 | 2 s | Lectures séquentielles : Shelly 2 s, Zendure 2 s, Tongou 5 s, Envoy 10 s |
 | `task_forecast` | 0 | 3 | 1 h, plus 05:30 | Open-Meteo, puis re-planification |
 | `task_hist` | 0 | 2 | toutes les 30 min | Agrégation, mise à jour des RLS et du profil, persistance |
 | httpd (IDF) | 0 | 5 | — | API REST, WebSocket (envoi de l'état toutes les 2 s) |
@@ -191,8 +191,9 @@ Timeout HTTP **3 s**, au plus 1 nouvel essai, puis `valid = false`. Ne **jamais*
 - Lecture : `GET http://<ip>/properties/report` → `sn`, `properties.electricLevel` (SOC %), `outputHomePower`, `gridInputPower`, `packInputPower`, `outputPackPower`, `acMode`, `inputLimit`, `outputLimit`, `socSet` et `minSoc` (en ‰, `1000` = 100 %).
 - Écriture : `POST http://<ip>/properties/write` avec le corps `{"sn":"<sn>","properties":{...}}`.
   - Charge : `{"acMode":1,"inputLimit":W}`. Décharge : `{"acMode":2,"outputLimit":W}`. Repos : limites à 0.
-  - Ajouter `"smartMode":1` pour éviter l'usure de la flash de la batterie lors des écritures fréquentes. `TODO(verify)` : confirmer la sémantique de `smartMode` dans la documentation zenSDK officielle.
-  - **Ne pas écrire** si l'écart avec la consigne actuelle est < 20 W. **Au plus 1 écriture toutes les 10 s.**
+  - Ajouter `"smartMode":1` : les paramètres ne sont pas écrits dans la flash de la batterie (documentation zenSDK officielle, lue le 2026-11-11 : « Parameters are not written to flash… Recommended for frequent configuration changes » ; aucune limite de fréquence documentée).
+  - **Ne pas écrire** si l'écart avec la consigne actuelle est < 20 W. **Au plus 1 écriture toutes les 3 s** (10 s jusqu'au 2026-11-11, accéléré à la demande de l'utilisateur pour mieux suivre le compteur).
+  - Après une écriture, la consigne n'est recalculée qu'avec des mesures du Shelly **et** du SolarFlow prises au moins 1,5 s après elle (`control_act_settled`, raison « attente batterie ») : pas de double correction du même écart. `TODO(verify)` : temps de réponse réel du SolarFlow, non documenté.
 - Au démarrage, écrire `minSoc` et `socSet` depuis la config.
 - Au démarrage de l'ESP32 ou si le Shelly est invalide : consigne **repos** (0 W).
 - Lecture irrégulière possible (des timeouts sont signalés par d'autres utilisateurs) : tolérer jusqu'à 3 échecs consécutifs avant `stale`.
@@ -271,12 +272,12 @@ Entrées : prévisions PV et consommation par créneau pour les 24 h à venir, S
 
 Sortie : une structure `plan_t` exposée dans l'API (`/api/plan`) et affichée dans l'interface.
 
-### 9.4 Boucle temps réel (`regulator_step`, toutes les 5 s)
+### 9.4 Boucle temps réel (`regulator_step`, à chaque mesure, ≈ 2 s)
 
 Fonction **pure** : `regulator_step(const reg_input_t*, reg_state_t*, reg_output_t*)`.
 
 **Batterie (asservissement zéro injection / zéro soutirage)** :
-- En **HP** : consigne `p_batt_cible = p_batt_actuelle + p_grid` (vise 0 W au compteur), avec une zone morte de ±30 W, une rampe max de ±300 W par pas, et des bornes `[−p_charge_max, +p_décharge_max]`. Décharge interdite si `SOC ≤ SOC_min`.
+- En **HP** : consigne `p_batt_cible = p_batt_actuelle + p_grid` (vise 0 W au compteur), avec une zone morte de ±30 W, une rampe max de ±600 W par pas (un pas utile par écriture, donc ≥ 3 s), et des bornes `[−p_charge_max, +p_décharge_max]`. Décharge interdite si `SOC ≤ SOC_min`.
 - En **HC** : **pas de décharge**. Charge seulement depuis le surplus solaire (rare la nuit) ou en arbitrage (§9.6).
 - Surplus solaire (`p_grid < −30`) : charger, sauf si le chauffe-eau est prioritaire selon le plan.
 
@@ -404,6 +405,7 @@ Autres règles :
   --line:      #2a2a2a;   /* flux inactif */
   --red:       #e10600;   /* accent principal, import réseau, alertes */
   --red-soft:  #ff4d4d;   /* batterie */
+  --batt-light: #ffa3a3;  /* batterie dans les graphiques empilés (historique) */
   --red-dim:   #4a0a0a;   /* fonds d'alerte */
   --white:     #ffffff;   /* solaire, maison, valeurs principales */
   --text-2:    #b3b3b3;
@@ -498,7 +500,7 @@ La config est stockée comme **blob versionné** (`cfg_version`, CRC32). Si la v
 
 ### 12.3 Critères d'acceptation
 - 72 h sans redémarrage, heap minimum ≥ 40 Ko.
-- Aucune écriture Zendure plus fréquente qu'une toutes les 10 s, et aucun basculement du relais qui ne respecte pas les durées min.
+- Aucune écriture Zendure plus fréquente qu'une toutes les 3 s, et aucun basculement du relais qui ne respecte pas les durées min.
 - Débrancher un appareil déclenche le bon repli en moins de 30 s.
 - Sur une semaine réelle : le ballon atteint la coupure du thermostat à chaque cycle avant l'heure des douches.
 - Les énergies intégrées (`E_import`, `E_export`) s'écartent de moins de 3 % des compteurs du Shelly sur 24 h.

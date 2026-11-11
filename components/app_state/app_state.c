@@ -59,6 +59,20 @@ bool app_cmd_receive(app_cmd_t *cmd, TickType_t wait)
     return xQueueReceive(q_cmd, cmd, wait) == pdTRUE;
 }
 
+static TaskHandle_t s_sample_listener;
+
+void app_state_listen_samples(TaskHandle_t task)
+{
+    s_sample_listener = task;
+}
+
+void app_state_notify_sample(void)
+{
+    if (s_sample_listener != NULL) {
+        xTaskNotifyGive(s_sample_listener);
+    }
+}
+
 uint32_t app_now_ms(void)
 {
     return (uint32_t)(esp_timer_get_time() / 1000);

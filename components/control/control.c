@@ -18,7 +18,9 @@
 
 static const char *TAG = "control";
 
-#define REGUL_PERIOD_MS     5000
+#define REGUL_PERIOD_MS     5000        /* au plus tard : la tâche est réveillée à chaque mesure (≈ 2 s) */
+#define REGUL_MIN_STEP_MS   900         /* Shelly et SolarFlow lus presque ensemble : un seul pas */
+#define LOG_SP_GAP_S        10          /* variations de consigne seules : une ligne par 10 s au plus */
 #define REGUL_STACK         6144
 #define REGUL_PRIO          7
 #define REGUL_CORE          1
@@ -260,13 +262,15 @@ static void maybe_log(int64_t now, const reg_input_t *in, const reg_output_t *o,
         .flags = (o->relay ? CTL_F_RELAY : 0) | (observer ? CTL_F_OBSERVER : 0) | (in->hc ? CTL_F_HC : 0) |
                  (s_reg.wh.tank_full ? CTL_F_FULL : 0) | (!in->grid_ok ? CTL_F_FALLBACK : 0),
         .ce_reason = o->ce_reason,
-        .batt_reason = o->batt_reason,
-        .limits = o->batt_limits,
+        /* L'attente entre deux écritures alterne avec la raison réelle : pas une décision à journaliser. */
+        .batt_reason = (o->batt_reason == RB_SETTLE && have) ? last.batt_reason : o->batt_reason,
+        .limits = o->batt_reason == RB_SETTLE && have ? last.limits : o->batt_limits,
         .mode = (uint8_t)in->mode,
     };
     bool changed = !have || e.flags != last.flags || e.ce_reason != last.ce_reason ||
                    e.batt_reason != last.batt_reason || e.mode != last.mode ||
-                   abs(e.batt_sp - last.batt_sp) >= LOG_SP_STEP_W || now - (int64_t)last.ts >= LOG_HEARTBEAT_S;
+                   (abs(e.batt_sp - last.batt_sp) >= LOG_SP_STEP_W && now - (int64_t)last.ts >= LOG_SP_GAP_S) ||
+                   now - (int64_t)last.ts >= LOG_HEARTBEAT_S;
     if (!changed) {
         return;
     }
@@ -294,12 +298,18 @@ static void regul_task(void *arg)
     int last_plan_hour = -1;
     int last_morning_yday = -1;
     bool was_hc = false;
-    int64_t last_step = 0;
+    uint32_t last_step_ms = 0;
+    app_state_listen_samples(xTaskGetCurrentTaskHandle());
     int64_t night_cycle = 0;
 
     for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(REGUL_PERIOD_MS));
+        /* Un pas à chaque mesure du Shelly ou du SolarFlow, et au moins toutes les 5 s. */
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(REGUL_PERIOD_MS));
         esp_task_wdt_reset();
+        uint32_t now_ms = app_now_ms();
+        if (last_step_ms != 0 && now_ms - last_step_ms < REGUL_MIN_STEP_MS) {
+            continue;
+        }
 
         static app_state_t st;
         app_state_get(&st);
@@ -349,7 +359,7 @@ static void regul_task(void *arg)
         reg_input_t in = {
             .cfg = &s_rcfg,
             .now = now,
-            .dt_s = last_step ? (float)(now - last_step) : (float)REGUL_PERIOD_MS / 1000.0f,
+            .dt_s = last_step_ms ? (float)(now_ms - last_step_ms) / 1000.0f : 2.0f,
             .time_ok = time_ok,
             .hc = hc,
             .grid_ok = grid_ok,
@@ -375,7 +385,9 @@ static void regul_task(void *arg)
                 in.arb_soc_target = s_arb.soc_target;
             }
         }
-        last_step = now;
+        last_step_ms = now_ms;
+        bool observer = s_cfg.sys.observer;
+        in.batt_hold =!observer && !control_act_settled(now_ms, st.p_grid.ts_ms, st.p_batt.ts_ms);
         reg_output_t out;
         regulator_step(&in, &s_reg, &out);
         if (out.tank_full_event) {
@@ -389,7 +401,6 @@ static void regul_task(void *arg)
             ESP_LOGW(TAG, "rattrapage interdit en HP : eau peut-être tiède ce soir");
         }
 
-        bool observer = s_cfg.sys.observer;
         maybe_log(now, &in, &out, observer);
         if (time_ok && !observer) {
             control_act_submit(out.batt_sp, out.relay);

@@ -19,12 +19,31 @@ static const char *TAG = "act";
 #define ACT_CORE            0
 #define ACT_WAIT_MS         1000
 #define ZENDURE_MIN_DELTA_W 20.0f       /* §8.3 : pas d'écriture pour un écart < 20 W */
-#define ZENDURE_MIN_GAP_S   10          /* §8.3 : au plus 1 écriture toutes les 10 s */
+/* §8.3 : au plus 1 écriture toutes les 3 s. Avec smartMode = 1, les consignes ne sont pas écrites dans
+ * la flash de la batterie (documentation zenSDK, « recommended for frequent changes », lue le 2026-11-11). */
+#define ZENDURE_MIN_GAP_MS  3000
+/* TODO(verify) : temps que met le SolarFlow à appliquer une consigne (non documenté). Les mesures
+ * prises moins de 1,5 s après l'écriture ne servent pas à recalculer la consigne. */
+#define ZENDURE_SETTLE_MS   1500
 #define RELAY_RESYNC_S      30          /* relais mesuré ≠ commande : renvoi après 30 s */
 
 static StaticTask_t s_task_buf;
 static StackType_t s_task_stack[ACT_STACK];
 static cfg_t s_cfg;
+static volatile bool s_written;             /* au moins une consigne écrite depuis l'activation */
+static volatile uint32_t s_write_start_ms;
+static volatile uint32_t s_write_done_ms;
+
+bool control_act_settled(uint32_t now_ms, uint32_t grid_ts_ms, uint32_t batt_ts_ms)
+{
+    if (!s_written) {
+        return true;
+    }
+    uint32_t done = s_write_done_ms;
+    return now_ms - s_write_start_ms >= ZENDURE_MIN_GAP_MS &&
+           (int32_t)(grid_ts_ms - done) >= ZENDURE_SETTLE_MS &&
+           (int32_t)(batt_ts_ms - done) >= ZENDURE_SETTLE_MS;
+}
 
 static void submit(app_cmd_type_t type, float w, bool on)
 {
@@ -52,7 +71,9 @@ static bool zendure_set(float w)
     }
     esp_err_t err = drv_zendure_set_power(&s_cfg, w);
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "SolarFlow : consigne %+.0f W", w);
+        ESP_LOGD(TAG, "SolarFlow : consigne %+.0f W", w);
+        s_write_done_ms = app_now_ms();
+        s_written = true;
     }
     return err == ESP_OK;
 }
@@ -89,7 +110,7 @@ static void act_task(void *arg)
     bool piloting = false;
     float want_sp = 0.0f, written_sp = NAN;
     int want_relay = -1, sent_relay = -1;
-    int64_t last_write = 0, last_relay = 0;
+    int64_t last_relay = 0;
 
     for (;;) {
         app_cmd_t cmd;
@@ -105,6 +126,7 @@ static void act_task(void *arg)
                 zendure_set(0.0f);
                 relay_set(false);
                 piloting = false;
+                s_written = false;
             }
             continue;
         }
@@ -114,8 +136,8 @@ static void act_task(void *arg)
             if (s_cfg.dev.zendure_ip[0] != '\0' && drv_zendure_set_soc_limits(&s_cfg) != ESP_OK) {
                 ESP_LOGW(TAG, "SOC min/max non écrits");
             }
+            s_write_start_ms = app_now_ms();
             written_sp = zendure_set(0.0f) ? 0.0f : NAN;
-            last_write = now;
             want_sp = 0.0f;
             want_relay = -1;
             sent_relay = -1;
@@ -129,10 +151,11 @@ static void act_task(void *arg)
             }
         }
 
-        /* Batterie : écart ≥ 20 W et 10 s depuis la dernière écriture (§8.3). */
+        /* Batterie : écart ≥ 20 W et 3 s depuis la dernière écriture (§8.3). */
         bool differs = isnan(written_sp) || fabsf(want_sp - written_sp) >= ZENDURE_MIN_DELTA_W;
-        if (differs && now - last_write >= ZENDURE_MIN_GAP_S) {
-            last_write = now;   /* même en échec : pas de rafale d'écritures */
+        uint32_t now_ms = app_now_ms();
+        if (differs && now_ms - s_write_start_ms >= ZENDURE_MIN_GAP_MS) {
+            s_write_start_ms = now_ms;  /* même en échec : pas de rafale d'écritures */
             if (zendure_set(want_sp)) {
                 written_sp = want_sp;
             }

@@ -9,7 +9,7 @@
 #include "waterheater.h"
 
 #define REG_DEADBAND_W      30.0f
-#define REG_RAMP_W          300.0f      /* variation max de consigne par pas */
+#define REG_RAMP_W          600.0f      /* variation max de consigne par pas (un pas par écriture, ≥ 3 s) */
 #define REG_CE_START_S      120         /* surplus suffisant depuis 2 min */
 #define REG_CE_STOP_S       180         /* énergie insuffisante depuis 3 min */
 #define REG_THERMO_W        100.0f      /* relais ON et p_ce sous ce seuil … */
@@ -29,6 +29,7 @@ typedef enum {
     RB_DEADBAND,            /* |p_grid| < 30 W : consigne inchangée */
     RB_TRACK,               /* asservissement zéro injection / zéro soutirage */
     RB_ARBITRAGE,           /* charge depuis le réseau en HC, rentable selon le plan (§9.6) */
+    RB_SETTLE,              /* consigne précédente pas encore appliquée et remesurée : inchangée */
 } reg_batt_reason_t;
 
 /* Limites appliquées à la consigne batterie (bits). */
@@ -91,6 +92,8 @@ typedef struct {
     int64_t   next_shower;      /* prochaine heure des douches */
     reg_override_t override;
     int64_t   override_until;
+    bool      batt_hold;        /* dernière écriture trop récente ou mesures antérieures à elle : la
+                                 * consigne ne bouge pas (évite de corriger deux fois le même écart) */
     float     arb_charge_w;     /* charge réseau demandée pour ce créneau HC (W, ≥ 0), 0 = pas d'arbitrage */
     float     arb_soc_target;   /* % où s'arrêter */
 } reg_input_t;

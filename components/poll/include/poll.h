@@ -10,6 +10,6 @@
 esp_err_t poll_start(void);
 
 /* Périodes de sondage, ms. Shelly : cfg.sys.poll_ms. */
-#define POLL_ZENDURE_MS     5000
+#define POLL_ZENDURE_MS     2000    /* au rythme du Shelly : p_batt et p_grid lus au même moment */
 #define POLL_TONGOU_MS      5000
 #define POLL_ENVOY_MS       10000

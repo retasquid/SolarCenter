@@ -529,3 +529,4 @@ La config est stockée comme **blob versionné** (`cfg_version`, CRC32). Si la v
 - Ne jamais coder en dur une IP, un jeton, un prix ou un horaire HC : tout passe par `config`.
 - Ne jamais coder un endpoint ou un champ marqué `TODO(verify)` comme s'il était confirmé : isoler la valeur dans une constante nommée, commentée `TODO(verify)`.
 - Petits commits ciblés, un par fonctionnalité, avec un message en français.
+- **Version** (demande de l'utilisateur, 2026-11-11) : `version.txt` à la racine, augmentée à chaque livraison (mineure pour une fonctionnalité, correctif pour une correction), dans le même commit. La version affichée est `version.txt+<commit>` (`-dirty` si non commité) : commiter **avant** la compilation livrée, pour que le numéro et la date de compilation soient justes.

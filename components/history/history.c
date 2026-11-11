@@ -82,6 +82,18 @@ static uint32_t s_counter_ms;
 static float s_pv_since_counter;        /* Wh PV intégrés normalement depuis cette lecture */
 static hist_gap_info_t s_gap_info;
 
+typedef struct {
+    float    eta;
+    float    last;
+    uint16_t samples;
+} eta_saved_t;
+
+/* Rendement de la batterie (s_mtx), persisté avec les modèles */
+static eta_learn_t s_eta;
+static bool s_eta_dirty;
+static float s_prev_batt_w;
+static bool s_prev_batt_ok;
+
 /* Modèles (s_model_mtx) */
 static rls_t s_rls_pv;
 static rls_t s_rls_base;
@@ -252,6 +264,15 @@ static void models_save(void)
     }
     xSemaphoreGive(s_model_mtx);
     if (err == ESP_OK) {
+        /* Rendement : le résultat appris seulement, pas le cycle en cours. */
+        eta_saved_t v;
+        xSemaphoreTake(s_mtx, portMAX_DELAY);
+        v = (eta_saved_t){ s_eta.eta, s_eta.last, s_eta.samples };
+        s_eta_dirty = false;
+        xSemaphoreGive(s_mtx);
+        err = nvs_set_blob(h, "eta", &v, sizeof(v));
+    }
+    if (err == ESP_OK) {
         err = nvs_commit(h);
     }
     nvs_close(h);
@@ -271,6 +292,7 @@ static bool load_blob(nvs_handle_t h, const char *key, void *dst, size_t len)
 
 static void models_load(float kwc)
 {
+    eta_learn_init(&s_eta);
     models_pv_init(&s_rls_pv, kwc);
     models_base_init(&s_rls_base);
     profile_init(&s_profile);
@@ -293,6 +315,13 @@ static void models_load(float kwc)
         if (load_blob(h, "prof", &ptmp, sizeof(ptmp))) {
             s_profile = ptmp;
         }
+    }
+    eta_saved_t v;
+    if (load_blob(h, "eta", &v, sizeof(v)) && v.eta >= ETA_LO && v.eta <= ETA_HI) {
+        s_eta.eta = v.eta;
+        s_eta.last = v.last;
+        s_eta.samples = v.samples;
+        ESP_LOGI(TAG, "rendement batterie appris : %.3f (%u cycles)", (double)v.eta, v.samples);
     }
     nvs_close(h);
     ESP_LOGI(TAG, "modèles chargés : PV %lu éch., base %lu éch.",
@@ -398,6 +427,7 @@ void history_on_sample(const app_state_t *st)
     bool pv_ok = app_state_usable(st, DEV_ENVOY, &st->p_pv);
     bool batt_ok = !st->dev[DEV_ZENDURE].configured || app_state_usable(st, DEV_ZENDURE, &st->p_batt);
     bool ce_ok = !st->dev[DEV_TONGOU].configured || app_state_usable(st, DEV_TONGOU, &st->p_ce);
+    bool batt_meas = app_state_usable(st, DEV_ZENDURE, &st->p_batt) && app_state_usable(st, DEV_ZENDURE, &st->soc);
     uint32_t ms = st->p_grid.ts_ms;
     int64_t now = time(NULL);
     tariff_day_t day;
@@ -418,6 +448,17 @@ void history_on_sample(const app_state_t *st)
             float pv_before = s_slot.e_pv;
             stats_integrate(&s_slot, &s_prev, &in, dt, full && s_prev_full, price, s_tariff.price_sell, price_hc);
             s_pv_since_counter += s_slot.e_pv - pv_before;
+            /* Rendement réel : bilan du SolarFlow entre deux passages au même SOC. */
+            if (st->dev[DEV_ZENDURE].configured &&
+                eta_learn_step(&s_eta, batt_meas && s_prev_batt_ok, s_prev_batt_w, st->p_batt.value, dt,
+                               (int)lroundf(st->soc.value), now)) {
+                s_eta_dirty = true;
+                ESP_LOGI(TAG, "cycle batterie : rendement %.3f, moyenne %.3f (%u cycles)", (double)s_eta.last,
+                         (double)s_eta.eta, s_eta.samples);
+                if (s_task != NULL) {
+                    xTaskNotifyGive(s_task);
+                }
+            }
             /* Coupure seulement après une première lecture du compteur (référence de l'écart). */
             if (s_pv_configured && s_counter_ok && (!pv_ok || !s_prev_pv_ok)) {
                 gap_step_locked(&in, dt, batt_ok, ce_ok, price, price_hc, (uint32_t)now);
@@ -427,6 +468,8 @@ void history_on_sample(const app_state_t *st)
         s_prev_ms = ms;
         s_prev_full = full;
         s_prev_pv_ok = pv_ok;
+        s_prev_batt_w = st->p_batt.value;
+        s_prev_batt_ok = batt_meas;
         s_prev_valid = true;
     } else if (!grid_ok) {
         s_prev_valid = false;
@@ -719,6 +762,23 @@ static void apply_gap(void)
              (double)total_wh, (double)(secs / 3600.0f), n);
 }
 
+float history_batt_eta(float fallback, eta_learn_t *info)
+{
+    if (!s_started) {
+        if (info != NULL) {
+            eta_learn_init(info);
+        }
+        return fallback;
+    }
+    xSemaphoreTake(s_mtx, portMAX_DELAY);
+    float v = eta_learn_value(&s_eta, fallback);
+    if (info != NULL) {
+        *info = s_eta;
+    }
+    xSemaphoreGive(s_mtx);
+    return v;
+}
+
 void history_gap_info(hist_gap_info_t *out)
 {
     xSemaphoreTake(s_mtx, portMAX_DELAY);
@@ -802,9 +862,14 @@ static void hist_task(void *arg)
         /* s_gap est figé tant que s_gap_req est vrai : lecture sans verrou. */
         xSemaphoreTake(s_mtx, portMAX_DELAY);
         bool gap = s_gap_req && !s_pending_valid;
+        bool eta_new = s_eta_dirty;
         xSemaphoreGive(s_mtx);
         if (gap) {
             apply_gap();
+            esp_task_wdt_reset();
+        }
+        if (eta_new) {
+            models_save();      /* nouveau cycle de batterie mesuré */
             esp_task_wdt_reset();
         }
     }

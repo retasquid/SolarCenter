@@ -227,6 +227,8 @@ On sert les usages **par valeur décroissante**. Avec un tarif HP/HC classique, 
 
 `coût_usure = prix_batterie / (cycles_garantis × capacité_utile_kWh)`.
 
+`η_batt` est **appris** (`eta_learn`, `algo/stats.c`, demande de l'utilisateur du 2026-11-11 : 77 % mesurés sur une semaine contre 0,88 configuré) : énergie sortie / énergie entrée côté AC entre deux passages au même SOC (consommation propre du SolarFlow comprise), cycles d'au moins 1,5 kWh entrés, sans trou de mesure, en moins de 72 h, moyenne glissante α = 0,2, utilisé après 3 cycles (sinon la valeur des Paramètres). Persisté en NVS avec les modèles ; il sert au plan, à l'arbitrage et à la projection de rentabilité.
+
 ### 9.2 Prévisions par RLS
 
 **Moindres carrés récursifs** avec facteur d'oubli λ (`algo/rls.c`, dimension `n ≤ 4`, tout en `float`) :

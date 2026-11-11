@@ -117,6 +117,27 @@ static esp_err_t system_get(httpd_req_t *req)
     }
 
     config_get(&g_web_cfg);
+    /* Rendement de la batterie : appris sur les cycles réels, sinon valeur des Paramètres. */
+    static eta_learn_t eta;
+    float eta_used = history_batt_eta(g_web_cfg.batt.eta, &eta);
+    cJSON *be = cJSON_AddObjectToObject(r, "batt_eta");
+    if (be != NULL) {
+        cJSON_AddNumberToObject(be, "used", (double)lroundf(eta_used * 1000.0f) / 1000.0);
+        cJSON_AddBoolToObject(be, "learned", eta.samples >= ETA_READY_SAMPLES);
+        cJSON_AddNumberToObject(be, "samples", eta.samples);
+        cJSON_AddNumberToObject(be, "ready_samples", ETA_READY_SAMPLES);
+        cJSON_AddNumberToObject(be, "config", (double)lroundf(g_web_cfg.batt.eta * 1000.0f) / 1000.0);
+        if (eta.samples > 0) {
+            cJSON_AddNumberToObject(be, "avg", (double)lroundf(eta.eta * 1000.0f) / 1000.0);
+            cJSON_AddNumberToObject(be, "last", (double)lroundf(eta.last * 1000.0f) / 1000.0);
+        }
+        cJSON_AddBoolToObject(be, "cycle_active", eta.active);
+        if (eta.active) {
+            cJSON_AddNumberToObject(be, "cycle_soc", eta.soc_ref);
+            cJSON_AddNumberToObject(be, "cycle_ch_wh", (double)lroundf(eta.e_ch));
+            cJSON_AddNumberToObject(be, "cycle_dis_wh", (double)lroundf(eta.e_dis));
+        }
+    }
     cJSON_AddStringToObject(r, "cfg_status", config_status_str(config_status()));
     cJSON_AddBoolToObject(r, "admin_set", g_web_cfg.sys.admin_pass[0] != '\0');
     cJSON_AddBoolToObject(r, "tariff_configured", g_web_cfg.tariff.configured);

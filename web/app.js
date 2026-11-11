@@ -486,8 +486,20 @@ function renderSystem(s) {
     ['État', CFG_STATUS[s.cfg_status] || s.cfg_status],
     ['Tarif', s.tariff_configured ? 'saisi' : 'à saisir', s.tariff_configured ? '' : 'warn'],
     ['Mode', s.observer ? 'observateur' : 'pilotage'],
+    ['Rendement batterie', etaText(s.batt_eta)],
     ['Coupures de l\'Envoy', gapText(s.envoy_gaps), s.envoy_gaps && s.envoy_gaps.active ? 'warn' : ''],
   ]);
+}
+
+// Rendement aller-retour : appris sur les cycles réels (même SOC au départ et à l'arrivée).
+function etaText(e) {
+  if (!e) return '—';
+  const pct = (v) => `${Math.round(v * 100)} %`;
+  let txt = e.learned ? `${pct(e.used)} appris sur ${e.samples} cycles`
+                      : `${pct(e.used)} (Paramètres) — apprentissage ${e.samples} / ${e.ready_samples} cycles`;
+  if (e.last != null) txt += ` · dernier cycle ${pct(e.last)}`;
+  if (e.cycle_active) txt += ` · cycle en cours depuis ${e.cycle_soc} % : ${fmtKwh(e.cycle_ch_wh)} entrés, ${fmtKwh(e.cycle_dis_wh)} sortis`;
+  return txt;
 }
 
 // Coupures de l'Envoy : production retrouvée au retour grâce à son compteur cumulé.
@@ -554,7 +566,7 @@ const SCHEMA = [
     { k: 'capa_kwh', l: 'Capacité utile', t: 'num', min: 0.1, max: 50, step: 0.01, u: 'kWh' },
     { k: 'p_charge_max', l: 'Charge max', t: 'num', min: 0, max: 2999, step: 1, u: 'W', help: 'À vérifier sur la fiche du SF 1600 AC+.' },
     { k: 'p_discharge_max', l: 'Décharge max', t: 'num', min: 0, max: 2999, step: 1, u: 'W' },
-    { k: 'eta', l: 'Rendement aller-retour', t: 'num', min: 0.5, max: 1, step: 0.01 },
+    { k: 'eta', l: 'Rendement aller-retour', t: 'num', min: 0.5, max: 1, step: 0.01, help: 'Valeur de départ : la carte apprend ensuite le rendement réel sur les cycles de charge et de décharge.' },
     { k: 'soc_min', l: 'SOC min', t: 'int', min: 0, max: 99, u: '%' },
     { k: 'soc_max', l: 'SOC max', t: 'int', min: 1, max: 100, u: '%' },
     { k: 'price_eur', l: 'Prix de la batterie', t: 'num', min: 0, max: 20000, step: 1, u: '€' },

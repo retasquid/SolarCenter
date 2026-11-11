@@ -68,6 +68,41 @@ void stats_gap_integrate(gap_acc_t *g, const flows_in_t *prev, const flows_in_t 
  * sont corrigés. secs_full n'est pas touché : la période reste « incomplète » (pas d'apprentissage). */
 void stats_gap_fill(const gap_acc_t *g, float e_pv, float price_sell, energy_acc_t *d);
 
+/* ---------- Rendement réel de la batterie ----------
+ * Énergie sortie / énergie entrée (côté AC, consommation propre du SolarFlow comprise) entre deux
+ * passages au même SOC : un cycle complet, sans hypothèse sur la capacité. Moyenne glissante. */
+#define ETA_MIN_CH_WH       1500.0f     /* énergie entrée minimale d'un cycle (SOC au % près : ±2,5 %) */
+#define ETA_MIN_DIS_WH      1000.0f
+#define ETA_MAX_CYCLE_S     (72 * 3600)
+#define ETA_ALPHA           0.2f
+#define ETA_LO              0.5f        /* bornes de la config (§11.6) */
+#define ETA_HI              1.0f
+#define ETA_READY_SAMPLES   3
+
+typedef struct {
+    /* Cycle en cours */
+    bool    active;
+    uint8_t soc_ref;            /* % au début du cycle */
+    bool    left_ref;           /* SOC sorti de soc_ref depuis le début */
+    int64_t t_start;
+    float   e_ch;               /* Wh entrés */
+    float   e_dis;              /* Wh sortis */
+    /* Résultat (persisté) */
+    float   eta;                /* moyenne glissante, 0 = aucun cycle */
+    uint16_t samples;
+    float   last;               /* dernier cycle mesuré */
+} eta_learn_t;
+
+void eta_learn_init(eta_learn_t *e);
+
+/* Un pas : p0, p1 puissance batterie (W, > 0 décharge) aux deux échantillons, soc entier (%).
+ * ok = faux (batterie inconnue, pas trop long) : le cycle en cours est abandonné.
+ * Retourne vrai si un cycle vient d'être mesuré (e->last, e->eta mis à jour). */
+bool eta_learn_step(eta_learn_t *e, bool ok, float p0, float p1, float dt_s, int soc, int64_t now);
+
+/* Rendement à utiliser : appris après ETA_READY_SAMPLES cycles, sinon fallback (config). */
+float eta_learn_value(const eta_learn_t *e, float fallback);
+
 /* coût_usure = prix / (cycles × capacité utile), €/kWh ; 0 si non renseigné. */
 float stats_wear_cost(float batt_price, float cycles, float capa_kwh);
 

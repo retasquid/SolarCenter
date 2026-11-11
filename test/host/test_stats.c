@@ -268,6 +268,93 @@ static void test_gap_battery_unknown_adds_pv_only(void)
     TEST_ASSERT_EQUAL_FLOAT(0.0f, d.e_pv);
 }
 
+/* ---------- Rendement réel de la batterie ---------- */
+
+/* Batterie simulée : 40 Wh par % de SOC, rendements de charge et de décharge connus, SOC entier. */
+typedef struct {
+    float stored;       /* Wh */
+    float p_prev;
+    int64_t now;
+} sim_batt_t;
+
+static int sim_soc(const sim_batt_t *b)
+{
+    return (int)lroundf(b->stored / 40.0f);
+}
+
+/* p > 0 décharge (côté AC), < 0 charge ; `seconds` par pas de 2 s. Retourne le nombre de cycles mesurés. */
+static int sim_run(eta_learn_t *e, sim_batt_t *b, float p_req, int seconds, bool ok)
+{
+    int cycles = 0;
+    for (int t = 0; t < seconds; t += 2) {
+        /* Butées du SolarFlow : plus de décharge à 10 %, plus de charge à 100 %. */
+        float p = p_req > 0 && b->stored <= 400.0f ? 0.0f : (p_req < 0 && b->stored >= 4000.0f ? 0.0f : p_req);
+        float wh = p * 2.0f / 3600.0f;
+        b->stored -= p > 0 ? wh / 0.88f : wh * 0.90f;      /* η_charge 0,90, η_décharge 0,88 */
+        b->now += 2;
+        cycles += eta_learn_step(e, ok, b->p_prev, p, 2.0f, sim_soc(b), b->now) ? 1 : 0;
+        b->p_prev = p;
+    }
+    return cycles;
+}
+
+static void test_eta_full_cycle(void)
+{
+    eta_learn_t e;
+    eta_learn_init(&e);
+    sim_batt_t b = { .stored = 400.0f };                    /* 10 % */
+    TEST_ASSERT_EQUAL_INT(0, sim_run(&e, &b, -1000.0f, 3 * 3600, true));   /* 3 kWh entrés */
+    TEST_ASSERT_EQUAL_INT(0, sim_run(&e, &b, 0.0f, 3600, true));
+    TEST_ASSERT_EQUAL_INT(1, sim_run(&e, &b, 1000.0f, 3 * 3600, true));
+    TEST_ASSERT_FLOAT_WITHIN(0.015f, 0.90f * 0.88f, e.last);
+    TEST_ASSERT_EQUAL_UINT16(1, e.samples);
+    TEST_ASSERT_EQUAL_FLOAT(0.88f, eta_learn_value(&e, 0.88f));   /* pas encore 3 cycles : config */
+}
+
+static void test_eta_small_swing_waits_for_enough_energy(void)
+{
+    eta_learn_t e;
+    eta_learn_init(&e);
+    sim_batt_t b = { .stored = 2000.0f };                   /* 50 % */
+    /* Petit aller-retour (0,5 kWh) : rien de mesuré, le cycle continue. */
+    TEST_ASSERT_EQUAL_INT(0, sim_run(&e, &b, -500.0f, 3600, true));
+    TEST_ASSERT_EQUAL_INT(0, sim_run(&e, &b, 500.0f, 3600, true));
+    TEST_ASSERT_EQUAL_INT(0, sim_run(&e, &b, -1000.0f, 2 * 3600, true));
+    TEST_ASSERT_EQUAL_INT(1, sim_run(&e, &b, 1000.0f, 3 * 3600, true));
+    TEST_ASSERT_FLOAT_WITHIN(0.015f, 0.90f * 0.88f, e.last);
+}
+
+static void test_eta_gap_aborts_cycle(void)
+{
+    eta_learn_t e;
+    eta_learn_init(&e);
+    sim_batt_t b = { .stored = 400.0f };
+    sim_run(&e, &b, -1000.0f, 3 * 3600, true);
+    sim_run(&e, &b, 1000.0f, 600, false);                   /* SolarFlow muet : énergie inconnue */
+    TEST_ASSERT_EQUAL_INT(0, sim_run(&e, &b, 1000.0f, 3 * 3600, true));
+    TEST_ASSERT_EQUAL_UINT16(0, e.samples);
+}
+
+static void test_eta_moving_average_and_ready(void)
+{
+    eta_learn_t e;
+    eta_learn_init(&e);
+    sim_batt_t b = { .stored = 400.0f };
+    for (int i = 0; i < 3; i++) {
+        sim_run(&e, &b, -1000.0f, 3 * 3600, true);
+        sim_run(&e, &b, 1000.0f, 3 * 3600, true);
+        sim_run(&e, &b, 1000.0f, 600, true);                /* en butée basse : SOC qui ne bouge plus */
+    }
+    TEST_ASSERT_TRUE(e.samples >= 3);
+    TEST_ASSERT_FLOAT_WITHIN(0.02f, 0.792f, eta_learn_value(&e, 0.88f));
+    /* Cycle de plus de 72 h : abandonné, rien d'appris. */
+    uint16_t n = e.samples;
+    sim_run(&e, &b, -1000.0f, 3600, true);
+    sim_run(&e, &b, 0.0f, 80 * 3600, true);
+    sim_run(&e, &b, 1000.0f, 3600, true);
+    TEST_ASSERT_EQUAL_UINT16(n, e.samples);
+}
+
 int main(void)
 {
     UNITY_BEGIN();
@@ -287,5 +374,9 @@ int main(void)
     RUN_TEST(test_gap_evening_discharge);
     RUN_TEST(test_gap_charge_from_grid);
     RUN_TEST(test_gap_battery_unknown_adds_pv_only);
+    RUN_TEST(test_eta_full_cycle);
+    RUN_TEST(test_eta_small_swing_waits_for_enough_energy);
+    RUN_TEST(test_eta_gap_aborts_cycle);
+    RUN_TEST(test_eta_moving_average_and_ready);
     return UNITY_END();
 }

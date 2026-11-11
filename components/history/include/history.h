@@ -99,6 +99,10 @@ typedef struct {
 
 void history_gap_info(hist_gap_info_t *out);
 
+/* Rendement aller-retour de la batterie : appris (stats.h, eta_learn) après ETA_READY_SAMPLES cycles,
+ * sinon fallback (valeur des Paramètres). *info peut être NULL. */
+float history_batt_eta(float fallback, eta_learn_t *info);
+
 /* Outils de date locale. */
 uint32_t history_date_of(int64_t t);                /* AAAAMMJJ */
 int32_t  history_daynum(uint32_t date);             /* jours depuis le 1970-01-01 */

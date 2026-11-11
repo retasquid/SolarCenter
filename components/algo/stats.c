@@ -146,6 +146,58 @@ void stats_gap_fill(const gap_acc_t *g, float e_pv, float price_sell, energy_acc
     d->hc_ce_value = ce_local * price_hc * kwh;
 }
 
+void eta_learn_init(eta_learn_t *e)
+{
+    memset(e, 0, sizeof(*e));
+}
+
+static void eta_restart(eta_learn_t *e, int soc, int64_t now)
+{
+    e->active = true;
+    e->soc_ref = (uint8_t)soc;
+    e->left_ref = false;
+    e->t_start = now;
+    e->e_ch = 0.0f;
+    e->e_dis = 0.0f;
+}
+
+bool eta_learn_step(eta_learn_t *e, bool ok, float p0, float p1, float dt_s, int soc, int64_t now)
+{
+    if (!ok || soc < 0 || soc > 100 || !(dt_s > 0.0f && dt_s <= STATS_MAX_DT_S) || !isfinite(p0) || !isfinite(p1)) {
+        e->active = false;      /* mesure manquante : le bilan du cycle ne serait plus juste */
+        return false;
+    }
+    if (!e->active || now - e->t_start > ETA_MAX_CYCLE_S) {
+        eta_restart(e, soc, now);
+        return false;
+    }
+    e->e_ch += trap(pos(-p0), pos(-p1), dt_s);
+    e->e_dis += trap(pos(p0), pos(p1), dt_s);
+    if (soc != e->soc_ref) {
+        e->left_ref = true;
+        return false;
+    }
+    if (!e->left_ref || e->e_ch < ETA_MIN_CH_WH || e->e_dis < ETA_MIN_DIS_WH) {
+        return false;           /* retour au SOC de départ, mais trop peu d'énergie : on continue */
+    }
+    float eta = e->e_dis / e->e_ch;
+    bool good = eta >= ETA_LO && eta <= ETA_HI;
+    if (good) {
+        e->last = eta;
+        e->eta = e->samples == 0 ? eta : (1.0f - ETA_ALPHA) * e->eta + ETA_ALPHA * eta;
+        if (e->samples < UINT16_MAX) {
+            e->samples++;
+        }
+    }
+    eta_restart(e, soc, now);   /* le cycle suivant part d'ici */
+    return good;
+}
+
+float eta_learn_value(const eta_learn_t *e, float fallback)
+{
+    return e->samples >= ETA_READY_SAMPLES && e->eta >= ETA_LO && e->eta <= ETA_HI ? e->eta : fallback;
+}
+
 float stats_wear_cost(float batt_price, float cycles, float capa_kwh)
 {
     if (!(batt_price > 0.0f && cycles > 0.0f && capa_kwh > 0.0f)) {

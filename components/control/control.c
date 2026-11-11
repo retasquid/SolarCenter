@@ -178,7 +178,7 @@ static void compute_plan(int64_t now, const app_state_t *st, const tariff_t *tf,
     s_pin.soc_min = s_cfg.batt.soc_min;
     s_pin.soc_max = s_cfg.batt.soc_max;
     s_pin.capa_kwh = s_cfg.batt.capa_kwh;
-    s_pin.eta = s_cfg.batt.eta;
+    s_pin.eta = history_batt_eta(s_cfg.batt.eta, NULL);    /* appris, sinon Paramètres */
     s_pin.wear_eur_kwh = stats_wear_cost(s_cfg.batt.price_eur, s_cfg.batt.cycles, s_cfg.batt.capa_kwh);
     s_pin.price_hp = hp_max >= 0.0f ? hp_max : tariff_mean_price(tf, false);
     s_pin.price_hc = hc_min >= 0.0f ? hc_min : tariff_mean_price(tf, true);

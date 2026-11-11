@@ -61,7 +61,7 @@ et le champ fautif est signalé.
 |---|---|
 | **Tarif** | **Obligatoire.** Type : *Base*, *HP/HC*, ou *HP/HC + week-end + saisons*. Plages d'heures creuses, prix TTC au kWh (abonnement exclu), prix de revente. |
 | **Installation PV** | Puissance crête, latitude et longitude, inclinaison, azimut (0 = sud, −90 = est, +90 = ouest). |
-| **Batterie** | Capacité utile, puissances max, rendement, SOC min et max, prix et cycles garantis (coût d'usure), date de mise en service. |
+| **Batterie** | Capacité utile, puissances max, rendement (valeur de départ : le rendement réel est ensuite appris sur les cycles et affiché dans la page Système), SOC min et max, prix et cycles garantis (coût d'usure), date de mise en service. |
 | **Chauffe-eau** | Puissance, durée d'une chauffe complète (apprise ensuite), **heure des douches**, marges, rattrapage en heures pleines. |
 | **Rentabilité** | Productible annuel et répartition mensuelle (servent à estimer les mois pas encore observés). |
 | **Appareils** | Adresses IP, jeton Envoy, numéro de série SolarFlow, identifiants Tuya. |

@@ -884,10 +884,10 @@ function niceStep(range, n) {
   return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p;
 }
 
-// Hachures : second codage de la batterie (rouge clair) et de l'export (blanc), voir légende.
+// Hachures : second codage de l'export (blanc), voir légende.
 function hatchDefs(root) {
   const defs = svg('defs', {}, root);
-  for (const [id, color] of [['h-batt', 'var(--red-soft)'], ['h-exp', 'var(--white)']]) {
+  for (const [id, color] of [['h-exp', 'var(--white)']]) {
     const p = svg('pattern', { id, width: 5, height: 5, patternUnits: 'userSpaceOnUse', patternTransform: 'rotate(45)' }, defs);
     svg('rect', { width: 5, height: 5, fill: 'var(--surface)' }, p);
     svg('line', { x1: 0, y1: 0, x2: 0, y2: 5, stroke: color, 'stroke-width': 2.4 }, p);
@@ -1043,14 +1043,28 @@ function drawChart(box, cfg) {
     showTip(ev, rows);
   };
   hit.addEventListener('pointermove', move);
-  hit.addEventListener('pointerdown', move);
-  hit.addEventListener('pointerleave', () => { cross.setAttribute('visibility', 'hidden'); tip().hidden = true; });
+  hit.addEventListener('pointerdown', (ev) => { hideChartTip(); chartCross = cross; move(ev); });
+  // Souris : l'infobulle suit le survol. Doigt : elle reste après l'appui, jusqu'à un appui ailleurs.
+  hit.addEventListener('pointerenter', () => { chartCross = cross; });
+  hit.addEventListener('pointerleave', (ev) => { if (ev.pointerType === 'mouse') hideChartTip(); });
+  // Appui long sur mobile : ni menu contextuel ni sélection du texte du graphique.
+  root.addEventListener('contextmenu', (ev) => ev.preventDefault());
 
   box.replaceChildren(root);
   box.chartCfg = cfg;
   box.chartWidth = W;
   chartResize.observe(box);
 }
+
+let chartCross = null;
+
+function hideChartTip() {
+  if (chartCross) chartCross.setAttribute('visibility', 'hidden');
+  chartCross = null;
+  tip().hidden = true;
+}
+document.addEventListener('pointerdown', (ev) => { if (!ev.target.closest('.chart')) hideChartTip(); });
+window.addEventListener('scroll', hideChartTip, { passive: true });
 
 // Redessine un graphique quand la largeur de son conteneur change (barre de défilement qui
 // apparaît, rotation, panneau) : le SVG est dessiné à la largeur mesurée.
@@ -1200,12 +1214,25 @@ async function refreshHome() {
 
 // ---------- Prévisions ----------
 
-let fcDay = 0;
+let fcDay = 0;                  // -1 : hier, 0 : aujourd'hui, 1 : demain
+const FC_FULL_COV = 80;         // % du créneau mesuré pour afficher la mesure telle quelle
+const FC_PART_COV = 25;         // en dessous, trop peu de mesures pour extrapoler
+
+// Début (epoch) du jour local décalé de `offset` jours.
+function dayStart(offset) {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() + offset);
+  return Math.round(d.getTime() / 1000);
+}
 
 async function loadForecast() {
   let fc, hist;
   try {
-    [fc, hist] = await Promise.all([getJson('/api/forecast'), getJson('/api/history?range=24h').catch(() => null)]);
+    [fc, hist] = await Promise.all([
+      getJson('/api/forecast'),
+      fcDay > 0 ? null : getJson('/api/history?range=' + (fcDay < 0 ? '48h' : '24h')).catch(() => null),
+    ]);
   } catch (e) {
     alertBox('fc-alerts', [[`Prévisions indisponibles : ${e.message}`]]);
     return;
@@ -1213,51 +1240,94 @@ async function loadForecast() {
   const al = [];
   if (!fc.coords) al.push(['Latitude et longitude non renseignées : pas de prévision météo (Paramètres → Installation PV).']);
   else if (!fc.ok) al.push(['Prévision Open-Meteo pas encore reçue.']);
-  else al.push([`Prévision Open-Meteo reçue à ${hhmm(fc.fetched)}.`, 'info']);
+  else if (fcDay >= 0) al.push([`Prévision Open-Meteo reçue à ${hhmm(fc.fetched)}.`, 'info']);
+  if (fcDay < 0) al.push(['Hier : la courbe est la prévision en vigueur à la clôture de chaque créneau (dernière météo reçue), les barres sont la mesure.', 'info']);
   alertBox('fc-alerts', al);
 
-  const rows = fc.rows.slice(fcDay * 48, fcDay * 48 + 48);
-  const t = rows.map((r) => r[0]);
   const W = (wh) => (wh == null ? null : wh * 3600 / fc.slot_s);
-  const actual = {};
-  if (hist && fcDay === 0) for (const r of hist.rows) actual[r[0]] = r;
-  const act = (i, f) => { const r = actual[t[i]]; return r && r[9] >= 80 ? W(f(r)) : null; };
+  const byT = {};
+  if (hist) for (const r of hist.rows) byT[r[0]] = r;
 
-  const pvRaw = rows.map((r) => W(r[3]));
-  const pv = rows.map((r) => W(r[4]));
-  const pvAct = t.map((_, i) => act(i, (r) => r[1]));
-  legend($('#fc-pv-legend'), [
-    { name: 'Mesuré', color: 'var(--white)' },
-    { name: 'Prévu (modèle)', color: 'var(--white)', line: true },
-    { name: 'Repli physique', color: 'var(--text-3)', line: true, dash: true },
-  ]);
-  drawChart($('#fc-pv'), {
-    t, step: fc.slot_s, fmt: fmtWaxis,
-    bars: [{ name: 'Mesuré', vals: pvAct, color: 'var(--white)', opacity: 0.4 }],
-    lines: [{ name: 'Prévu', vals: pv, color: 'var(--white)' }, { name: 'Repli', vals: pvRaw, color: 'var(--text-3)', dash: true }],
-  });
+  // Créneaux du jour affiché et courbes prévues.
+  let t, pv, pvRaw, base, baseProf;
+  if (fcDay < 0) {
+    t = [];
+    for (let x = dayStart(-1), end = dayStart(0); x < end; x += fc.slot_s) t.push(x);
+    const pred = (c) => t.map((x) => (byT[x] ? W(byT[x][c]) : null));
+    pv = pred(10);
+    base = pred(11);
+  } else {
+    const rows = fc.rows.slice(fcDay * 48, fcDay * 48 + 48);
+    t = rows.map((r) => r[0]);
+    pv = rows.map((r) => W(r[4]));
+    pvRaw = rows.map((r) => W(r[3]));
+    base = rows.map((r) => W(r[6]));
+    baseProf = rows.map((r) => W(r[5]));
+  }
 
-  const baseAct = t.map((_, i) => act(i, (r) => r[2] - r[3]));
-  legend($('#fc-base-legend'), [
-    { name: 'Mesurée', color: 'var(--red-soft)' },
-    { name: 'Prévue (modèle)', color: 'var(--red-soft)', line: true },
-    { name: 'Profil moyen', color: 'var(--text-3)', line: true, dash: true },
-  ]);
-  drawChart($('#fc-base'), {
-    t, step: fc.slot_s, fmt: fmtWaxis,
-    bars: [{ name: 'Mesurée', vals: baseAct, color: 'var(--red-soft)', opacity: 0.45 }],
-    lines: [{ name: 'Prévue', vals: rows.map((r) => W(r[6])), color: 'var(--red-soft)' },
-            { name: 'Profil', vals: rows.map((r) => W(r[5])), color: 'var(--text-3)', dash: true }],
-  });
+  // Mesures : entières si le créneau est assez couvert ou reconstitué après une coupure de l'Envoy
+  // (bit du drapeau), sinon extrapolées depuis la partie mesurée quand elle suffit.
+  const measured = (f, bit) => {
+    const full = [], part = [];
+    for (const x of t) {
+      const r = byT[x];
+      let a = null, b = null;
+      if (r) {
+        const cov = r[9];
+        if (cov >= FC_FULL_COV || ((r[12] || 0) & bit)) a = W(f(r));
+        else if (cov >= FC_PART_COV) b = W(f(r)) * 100 / cov;
+      }
+      full.push(a);
+      part.push(b);
+    }
+    return { full, part, hasPart: part.some((v) => v != null) };
+  };
+  const mPv = measured((r) => r[1], 1);
+  const mBase = measured((r) => Math.max(0, r[2] - r[3]), 2);
 
-  const sumKwh = (vals) => vals.reduce((a, v) => a + (v || 0), 0) / 1000 * fc.slot_s / 3600;
-  const quality = (mdl, total) => [
-    ['Total prévu', fr(total, 1) + ' kWh'],
-    ['Écart moyen (7 j)', mdl.mae7 == null ? 'pas encore de mesure' : `${mdl.mae7} Wh par créneau (${mdl.n7} créneaux)`],
-    ['Apprentissage', mdl.ready ? `${mdl.samples} échantillons` : `rodage : ${mdl.samples} / 96 (repli utilisé)`, mdl.ready ? '' : 'dim'],
-  ];
-  fillDl('fc-pv-q', quality(fc.pv, sumKwh(pv)));
-  const baseQ = quality(fc.base, sumKwh(rows.map((r) => W(r[6]))));
+  const chart = (boxSel, legSel, m, color, names, lines) => {
+    const bars = [{ name: names[0], vals: m.full, color, opacity: 0.45 }];
+    const leg = [{ name: names[0], color }];
+    if (m.hasPart) {
+      bars.push({ name: names[1], vals: m.part, color, opacity: 0.2 });
+      leg.push({ name: names[1], color: 'var(--text-3)' });
+    }
+    for (const l of lines) leg.push({ name: l.legend, color: l.color, line: true, dash: l.dash });
+    legend($(legSel), leg);
+    drawChart($(boxSel), { t, step: fc.slot_s, fmt: fmtWaxis, bars, lines });
+  };
+  const pvLines = [{ name: 'Prévu', legend: 'Prévu (modèle)', vals: pv, color: 'var(--white)' }];
+  if (pvRaw) pvLines.push({ name: 'Repli', legend: 'Repli physique', vals: pvRaw, color: 'var(--text-3)', dash: true });
+  chart('#fc-pv', '#fc-pv-legend', mPv, 'var(--white)', ['Mesuré', 'Mesuré en partie (extrapolé)'], pvLines);
+  const baseLines = [{ name: 'Prévue', legend: 'Prévue (modèle)', vals: base, color: 'var(--red-soft)' }];
+  if (baseProf) baseLines.push({ name: 'Profil', legend: 'Profil moyen', vals: baseProf, color: 'var(--text-3)', dash: true });
+  chart('#fc-base', '#fc-base-legend', mBase, 'var(--red-soft)', ['Mesurée', 'Mesurée en partie (extrapolée)'], baseLines);
+
+  const kwh = (w) => w * fc.slot_s / 3600 / 1000;
+  const quality = (mdl, pred, m) => {
+    const q = [];
+    if (fcDay <= 0) {
+      // Prévu et mesuré comparés sur les mêmes créneaux (ceux qui ont une mesure).
+      let p = 0, a = 0, n = 0;
+      for (let i = 0; i < t.length; i++) {
+        const v = m.full[i] ?? m.part[i];
+        if (v == null || pred[i] == null) continue;
+        p += kwh(pred[i]); a += kwh(v); n++;
+      }
+      if (n) {
+        const diff = a - p;
+        const sign = diff >= 0 ? '+' : '−';
+        q.push(['Mesuré / prévu', `${fr(a, 1)} / ${fr(p, 1)} kWh sur ${n} créneaux`]);
+        q.push(['Écart', `${sign}${fr(Math.abs(diff), 1)} kWh` + (p > 0.05 ? ` (${sign}${Math.round(Math.abs(diff) / p * 100)} %)` : '')]);
+      } else if (fcDay < 0) q.push(['Mesuré / prévu', 'aucune mesure enregistrée hier']);
+    }
+    if (fcDay >= 0) q.push(['Total prévu', fr(pred.reduce((s, v) => s + (v == null ? 0 : kwh(v)), 0), 1) + ' kWh']);
+    q.push(['Écart moyen (7 j)', mdl.mae7 == null ? 'pas encore de mesure' : `${mdl.mae7} Wh par créneau (${mdl.n7} créneaux)`]);
+    q.push(['Apprentissage', mdl.ready ? `${mdl.samples} échantillons` : `rodage : ${mdl.samples} / 96 (repli utilisé)`, mdl.ready ? '' : 'dim']);
+    return q;
+  };
+  fillDl('fc-pv-q', quality(fc.pv, pv, mPv));
+  const baseQ = quality(fc.base, base, mBase);
   if (fc.profile_total) {
     const p = fc.profile_slots;
     baseQ.push(['Profil appris', p === 0
@@ -1301,9 +1371,9 @@ function renderHistory() {
   }
   const bars = [
     { name: 'Solaire', vals: s.pv, color: 'var(--white)' },
-    { name: 'Batterie (décharge)', vals: s.dis, color: 'var(--red-soft)', hatch: 'h-batt' },
+    { name: 'Batterie (décharge)', vals: s.dis, color: 'var(--batt-light)' },
     { name: 'Réseau (import)', vals: s.imp, color: 'var(--red)' },
-    { name: 'Batterie (charge)', vals: s.ch, color: 'var(--red-soft)', hatch: 'h-batt', neg: true },
+    { name: 'Batterie (charge)', vals: s.ch, color: 'var(--batt-light)', neg: true },
     { name: 'Réseau (export)', vals: s.exp, color: 'var(--white)', hatch: 'h-exp', neg: true },
   ];
   legend($('#hist-legend'), bars.map((b) => ({ name: b.name, color: b.color, hatch: !!b.hatch })));

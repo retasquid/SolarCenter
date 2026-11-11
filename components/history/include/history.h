@@ -32,6 +32,7 @@ typedef struct {
 } hist_slot_t;
 
 #define HIST_SLOT_REBUILT   0x01    /* PV de l'Envoy reconstitué après une coupure (compteur cumulé) */
+#define HIST_SLOT_HOME_OK   0x02    /* … et maison reconstituée aussi (SolarFlow mesuré pendant la coupure) */
 
 typedef struct {
     uint32_t     date;          /* AAAAMMJJ */

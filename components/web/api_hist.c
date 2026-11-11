@@ -14,6 +14,7 @@
 static const char *TAG = "web";
 
 #define SLOTS_24H           48
+#define SLOTS_48H           96      /* hier en entier, quelle que soit l'heure */
 #define SLOTS_7D            336
 #define FORECAST_SLOTS      96      /* aujourd'hui et demain */
 #define MAE_DAYS            7
@@ -165,7 +166,7 @@ static bool emit_slot(const hist_slot_t *s, void *arg)
     jw_num(c->w, s->pv_pred, 0);
     jw_printf(c->w, ",");
     jw_num(c->w, s->base_pred, 0);
-    jw_printf(c->w, "]");
+    jw_printf(c->w, ",%u]", s->flags);
     c->first = false;
     return true;
 }
@@ -177,10 +178,12 @@ static esp_err_t history_get(httpd_req_t *req)
     int n;
     if (strcmp(range, "24h") == 0) {
         n = SLOTS_24H;
+    } else if (strcmp(range, "48h") == 0) {
+        n = SLOTS_48H;
     } else if (strcmp(range, "7d") == 0) {
         n = SLOTS_7D;
     } else {
-        return web_send_error(req, WEB_400, "range attendu : 24h ou 7d", "range");
+        return web_send_error(req, WEB_400, "range attendu : 24h, 48h ou 7d", "range");
     }
     if (!time_ok()) {
         return web_send_error(req, "503 Service Unavailable", "heure non synchronisée", NULL);
@@ -190,7 +193,7 @@ static esp_err_t history_get(httpd_req_t *req)
 
     jw_begin(&g_web_jw, req);
     jw_printf(&g_web_jw, "{\"range\":\"%s\",\"slot_s\":%d,\"cols\":[\"t\",\"pv\",\"home\",\"ce\",\"imp\",\"exp\","
-              "\"ch\",\"dis\",\"soc\",\"cov\",\"pv_pred\",\"base_pred\"],\"rows\":[", range, HIST_SLOT_S);
+              "\"ch\",\"dis\",\"soc\",\"cov\",\"pv_pred\",\"base_pred\",\"flags\"],\"rows\":[", range, HIST_SLOT_S);
     rows_ctx_t c = { .w = &g_web_jw, .first = true };
     history_foreach_slot(first, last, emit_slot, &c);
     jw_printf(&g_web_jw, "]}");

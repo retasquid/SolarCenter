@@ -347,7 +347,10 @@ static void regul_task(void *arg)
 
         flows_in_t fin;
         bool full;
-        bool grid_ok = app_state_flows_in(&st, &fin, &full) && !st.shelly_fallback;
+        bool grid_meas = app_state_flows_in(&st, &fin, &full);
+        bool grid_ok = grid_meas && !st.shelly_fallback;
+        /* Mesure en retard ou lecture ratée, sans être en repli (30 s, §8.1) : on garde les décisions. */
+        bool grid_hold = !grid_meas && !st.shelly_fallback && st.dev[DEV_SHELLY].ever_ok;
         reg_override_t ovr;
         int64_t ovr_until;
         xSemaphoreTake(s_mtx, portMAX_DELAY);
@@ -363,6 +366,7 @@ static void regul_task(void *arg)
             .time_ok = time_ok,
             .hc = hc,
             .grid_ok = grid_ok,
+            .grid_hold = grid_hold,
             .p_grid = fin.p_grid,
             .batt_ok = app_state_usable(&st, DEV_ZENDURE, &st.p_batt) && app_state_usable(&st, DEV_ZENDURE, &st.soc),
             .p_batt = st.p_batt.value,
@@ -401,7 +405,9 @@ static void regul_task(void *arg)
             ESP_LOGW(TAG, "rattrapage interdit en HP : eau peut-être tiède ce soir");
         }
 
-        maybe_log(now, &in, &out, observer);
+        if (!grid_hold) {
+            maybe_log(now, &in, &out, observer);    /* l'attente d'une mesure n'est pas une décision */
+        }
         if (time_ok && !observer) {
             control_act_submit(out.batt_sp, out.relay);
         }

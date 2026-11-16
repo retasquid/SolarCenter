@@ -96,6 +96,31 @@ static void test_hold_keeps_setpoint_until_settled(void)
     TEST_ASSERT_EQUAL_FLOAT(0, out.batt_sp);
 }
 
+/* Lecture du Shelly en retard (moins de 30 s) : ni repli ni changement, même pour un forçage en cours. */
+static void test_grid_hold_keeps_relay_and_setpoint(void)
+{
+    in.p_grid = 500;
+    in.override = REG_OVR_ON;
+    in.override_until = in.now + H(1);
+    step();
+    TEST_ASSERT_TRUE(out.relay);
+    TEST_ASSERT_EQUAL_FLOAT(500, out.batt_sp);
+    in.grid_ok = false;                                 /* mesure manquante… */
+    in.grid_hold = true;                                /* … mais pas encore le mode repli */
+    in.p_grid = 0;
+    in.now += 5;
+    step();
+    TEST_ASSERT_TRUE(out.relay);
+    TEST_ASSERT_EQUAL(RC_GRID_WAIT, out.ce_reason);
+    TEST_ASSERT_EQUAL_FLOAT(500, out.batt_sp);
+    in.grid_hold = false;                               /* 30 s écoulées : repli (§10) */
+    in.now += 30;
+    step();
+    TEST_ASSERT_FALSE(out.relay);
+    TEST_ASSERT_EQUAL(RC_FALLBACK, out.ce_reason);
+    TEST_ASSERT_EQUAL_FLOAT(0, out.batt_sp);
+}
+
 static void test_no_discharge_in_hc(void)
 {
     in.hc = true;
@@ -608,6 +633,7 @@ int main(void)
     RUN_TEST(test_zero_grid_tracking_with_ramp);
     RUN_TEST(test_deadband_keeps_setpoint);
     RUN_TEST(test_hold_keeps_setpoint_until_settled);
+    RUN_TEST(test_grid_hold_keeps_relay_and_setpoint);
     RUN_TEST(test_no_discharge_in_hc);
     RUN_TEST(test_arbitrage_charges_in_hc_only);
     RUN_TEST(test_arbitrage_respects_soc_max);

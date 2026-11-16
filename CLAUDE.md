@@ -176,6 +176,7 @@ Timeout HTTP **3 s**, au plus 1 nouvel essai, puis `valid = false`. Ne **jamais*
 - **Profil « monophase »** (constaté sur l'appareil de la maison le 2026-11-04, fw 2.1.0) : `EM.GetStatus` répond 404 ; les canaux sont `em1:0..2` et `GET /rpc/EM1.GetStatus?id=<canal>` → `act_power`. Le canal 0 mesure le réseau. Config `shelly_mode` (auto / triphase / monophase) et `shelly_channel`. `TODO(verify)` : signe de `act_power` pendant une injection.
 - L'authentification doit être désactivée sur le réseau local en v1 (sinon `TODO` : authentification digest).
 - C'est le **capteur maître** : si le Shelly est invalide plus de 30 s → **mode repli** (§10).
+- Avant ces 30 s, une lecture ratée ou en retard **ne change rien** : le régulateur garde le relais et la consigne (`grid_hold`, raison « attente du Shelly »). Constaté le 2026-11-16 : traiter chaque lecture manquante comme un repli coupait le chauffe-eau (même forcé) et remettait la batterie à 0 W plusieurs fois par minute. Mesure périmée après 3 périodes, 8 s au moins.
 
 ### 8.2 Enphase Envoy (firmware ≥ 7)
 - HTTPS avec certificat auto-signé : pas de vérification du certificat (option documentée dans la config, avec un avertissement dans l'interface).

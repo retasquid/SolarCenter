@@ -29,6 +29,7 @@ static const char *TAG = "poll";
 #define BACKOFF_AFTER_ERR       3       /* échecs consécutifs avant d'espacer les essais */
 #define BACKOFF_MS              30000
 #define ZENDURE_STALE_MS        15000
+#define SHELLY_STALE_MS         8000
 
 static StaticTask_t s_grid_buf;
 static StackType_t s_grid_stack[GRID_STACK];
@@ -310,7 +311,9 @@ static const poll_group_t s_envoy = { DEV_ENVOY, DEV_ENVOY, &s_cfg_envoy };
 
 esp_err_t poll_start(void)
 {
-    s_sched[DEV_SHELLY] = (sched_t){ .period_ms = 2000, .tolerated_err = 1 };
+    /* Périmé après 3 périodes, mais pas avant 8 s : une lecture qui réussit au second essai (3 s de
+     * délai dépassé) n'est pas une perte du compteur, même avec une période de 1 s. */
+    s_sched[DEV_SHELLY] = (sched_t){ .period_ms = 2000, .tolerated_err = 1, .stale_min_ms = SHELLY_STALE_MS };
     s_sched[DEV_ENVOY] = (sched_t){ .period_ms = POLL_ENVOY_MS, .tolerated_err = 1 };
     /* Lu toutes les 2 s, mais périmé seulement après 15 s : une lecture lente ne coupe pas la régulation. */
     s_sched[DEV_ZENDURE] = (sched_t){ .period_ms = POLL_ZENDURE_MS, .tolerated_err = ZENDURE_TOLERATED_ERR,

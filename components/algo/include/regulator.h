@@ -57,6 +57,7 @@ typedef enum {
     RC_IDLE,                /* pas assez de surplus */
     RC_MIN_ON,              /* maintenu ON : durée min */
     RC_MIN_OFF,             /* maintenu OFF : durée min */
+    RC_GRID_WAIT,           /* mesure du Shelly en retard (< 30 s) : décisions inchangées */
     RC_COUNT
 } reg_ce_reason_t;
 
@@ -78,6 +79,8 @@ typedef struct {
     bool      time_ok;          /* heure NTP valide */
     bool      hc;               /* heures creuses en ce moment */
     bool      grid_ok;          /* Shelly valide (sinon mode repli) */
+    bool      grid_hold;        /* mesure du Shelly manquante depuis moins de 30 s : ni repli ni nouvelle
+                                 * décision, le relais et la consigne restent tels quels (§8.1, §10) */
     float     p_grid;
     bool      batt_ok;          /* Zendure valide */
     float     p_batt;

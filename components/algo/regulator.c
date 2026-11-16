@@ -263,6 +263,15 @@ void regulator_step(const reg_input_t *in, reg_state_t *s, reg_output_t *out)
     }
     track_energy(in, s);
     out->tank_full_event = detect_tank_full(in, s);
+    if (in->time_ok && in->grid_hold) {
+        /* Une lecture en retard ou ratée n'est pas une panne du compteur : on attend la suivante. */
+        out->relay = s->relay_cmd;
+        out->ce_reason = RC_GRID_WAIT;
+        out->batt_sp = s->batt_sp;
+        out->batt_reason = RB_SETTLE;
+        out->catchup_at = wh_catchup_at(&in->cfg->wh, &s->wh, in->next_shower);
+        return;
+    }
     decide_ce(in, s, out);
     decide_batt(in, s, out);
 }
@@ -272,7 +281,7 @@ const char *regulator_ce_reason_name(uint8_t r)
     static const char *const names[RC_COUNT] = {
         "pas d'heure", "repli Shelly", "forçage ON", "forçage OFF", "ballon plein", "rattrapage",
         "plan de nuit", "attente surplus", "démarrage solaire", "solaire", "arrêt solaire",
-        "HC uniquement", "pas de surplus", "durée min ON", "durée min OFF",
+        "HC uniquement", "pas de surplus", "durée min ON", "durée min OFF", "attente du Shelly",
     };
     return r < RC_COUNT ? names[r] : "?";
 }

@@ -160,3 +160,18 @@ jours, et gardez les protections électriques et le thermostat du ballon en plac
 à 55 °C ou plus (risque de légionelle).
 
 L'API gratuite d'Open-Meteo est réservée à un usage non commercial.
+
+## Licence
+
+Copyright © 2026 retasquid
+
+Ce programme est un logiciel libre : vous pouvez le redistribuer et/ou le modifier selon les termes
+de la [Licence publique générale GNU version 3](LICENSE) (GPL-3.0), telle que publiée par la Free
+Software Foundation. Toute version modifiée et redistribuée doit rester sous la même licence, avec
+son code source.
+
+Il est distribué dans l'espoir qu'il sera utile, mais **sans aucune garantie**, ni même la garantie
+implicite de qualité marchande ou d'adéquation à un usage particulier.
+
+Composants tiers, sous leurs propres licences compatibles : ESP-IDF (Apache-2.0), cJSON, mDNS et
+LittleFS (MIT), Unity pour les tests (MIT).

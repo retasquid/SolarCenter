@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Mise à jour par le réseau, sans câble et sans effacer l'historique.
 
-    python tools/ota.py 192.168.1.46            # interface web puis firmware
-    python tools/ota.py 192.168.1.46 --www      # interface seule (après tools/build_web.py)
-    python tools/ota.py 192.168.1.46 --fw       # firmware seul (après idf.py build)
+    python tools/ota.py solaire.local           # interface web puis firmware
+    python tools/ota.py solaire.local --www     # interface seule (après tools/build_web.py)
+    python tools/ota.py solaire.local --fw      # firmware seul (après idf.py build)
 
 Le mot de passe administrateur est demandé, ou lu dans SOLAR_ADMIN_PASS.
 Les fichiers web sont envoyés un par un (POST /api/www), le firmware en dernier

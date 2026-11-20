@@ -1,0 +1,6 @@
+# Outils PC Tuya uniquement (tools/tuya_keys.py, tools/tuya_ref.py).
+# build_web.py et ota.py n'utilisent que la bibliothèque standard.
+tuya-device-sharing-sdk
+qrcode
+tinytuya
+cryptography
